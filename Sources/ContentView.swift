@@ -1,18 +1,37 @@
 import SwiftUI
 import WebKit
 import UIKit
+import AVFoundation
+
+enum SuperAppTab: String, CaseIterable {
+    case cockpit = "Cockpit"
+    case farm = "Nông Trại"
+    case report = "Báo Cáo"
+    case crypto = "Crypto"
+    case music = "Âm Nhạc"
+
+    var icon: String {
+        switch self {
+        case .cockpit: return "square.grid.2x2.fill"
+        case .farm: return "leaf.fill"
+        case .report: return "chart.bar.xaxis"
+        case .crypto: return "bitcoinsign.circle.fill"
+        case .music: return "headphones"
+        }
+    }
+}
 
 struct ContentView: View {
+    @State private var selectedTab: SuperAppTab = .cockpit
     @State private var isLoading = true
     @State private var loadFailed = false
     @State private var reloadToken = UUID()
-    @State private var homeToken = UUID()
+    @State private var navCommandToken = UUID()
+    @State private var pendingURL: URL = URL(string: "https://hub.buongloi.me")!
+    @State private var pendingJS: String? = "if(window.hubSwitchMode) window.hubSwitchMode('bento');"
     @State private var estimatedProgress: Double = 0.0
-    @State private var isOnSubApp = false
 
-    let hubURL = URL(string: "https://hub.buongloi.me")!
-
-    // Theme colors matching Buông Lơi Hub Bento Dark (#0C0C1D, #10B981, #A78BFA)
+    private let hubURL = URL(string: "https://hub.buongloi.me")!
     private let bgDark = Color(red: 0.047, green: 0.047, blue: 0.114)       // #0C0C1D
     private let emeraldAccent = Color(red: 0.063, green: 0.725, blue: 0.506) // #10B981
     private let purpleAccent = Color(red: 0.655, green: 0.545, blue: 0.980)  // #A78BFA
@@ -22,16 +41,56 @@ struct ContentView: View {
             bgDark
                 .ignoresSafeArea(.all)
 
-            WebViewContainer(
-                url: hubURL,
-                isLoading: $isLoading,
-                loadFailed: $loadFailed,
-                progress: $estimatedProgress,
-                isOnSubApp: $isOnSubApp,
-                reloadToken: reloadToken,
-                homeToken: homeToken
-            )
-            .ignoresSafeArea(.all)
+            VStack(spacing: 0) {
+                // Main WebView Viewport
+                WebViewContainer(
+                    initialURL: hubURL,
+                    pendingURL: pendingURL,
+                    pendingJS: pendingJS,
+                    isLoading: $isLoading,
+                    loadFailed: $loadFailed,
+                    progress: $estimatedProgress,
+                    selectedTab: $selectedTab,
+                    reloadToken: reloadToken,
+                    navCommandToken: navCommandToken
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Native iOS Super App Glassmorphic Bottom TabBar
+                HStack(spacing: 0) {
+                    ForEach(SuperAppTab.allCases, id: \.self) { tab in
+                        Button(action: {
+                            switchToTab(tab)
+                        }) {
+                            VStack(spacing: 4) {
+                                Image(systemName: tab.icon)
+                                    .font(.system(size: 18, weight: selectedTab == tab ? .bold : .medium))
+                                    .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.58))
+                                    .scaleEffect(selectedTab == tab ? 1.1 : 1.0)
+
+                                Text(tab.rawValue)
+                                    .font(.system(size: 10.5, weight: selectedTab == tab ? .bold : .medium, design: .rounded))
+                                    .foregroundColor(selectedTab == tab ? .white : Color(white: 0.58))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 9)
+                            .padding(.bottom, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .background(
+                    Color(red: 0.055, green: 0.065, blue: 0.135)
+                        .overlay(
+                            Rectangle()
+                                .fill(Color.white.opacity(0.09))
+                                .frame(height: 0.6),
+                            alignment: .top
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+                )
+            }
 
             // Top Loading Progress Bar
             if isLoading && estimatedProgress < 1.0 {
@@ -50,45 +109,8 @@ struct ContentView: View {
                 .frame(height: 3)
             }
 
-            // Floating "Về Hub" Pill Button when browsing a child service inside Super App
-            if isOnSubApp && !loadFailed {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Button(action: {
-                            let impact = UIImpactFeedbackGenerator(style: .medium)
-                            impact.impactOccurred()
-                            homeToken = UUID()
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "square.grid.2x2.fill")
-                                    .font(.system(size: 13, weight: .bold))
-                                Text("Về Hub")
-                                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                            }
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(
-                                Capsule()
-                                    .fill(Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.9))
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(emeraldAccent.opacity(0.75), lineWidth: 1.2)
-                                    )
-                            )
-                            .shadow(color: Color.black.opacity(0.45), radius: 10, x: 0, y: 4)
-                        }
-                        .padding(.leading, 16)
-                        .padding(.bottom, 22)
-                        Spacer()
-                    }
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
             // Initial Splash Screen
-            if isLoading && estimatedProgress < 0.28 && !isOnSubApp {
+            if isLoading && estimatedProgress < 0.28 && selectedTab == .cockpit {
                 VStack(spacing: 16) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -99,18 +121,18 @@ struct ContentView: View {
                                     endPoint: .bottomTrailing
                                 )
                             )
-                            .frame(width: 72, height: 72)
+                            .frame(width: 74, height: 74)
                             .shadow(color: emeraldAccent.opacity(0.35), radius: 16, x: 0, y: 6)
 
                         Text("⚡")
-                            .font(.system(size: 36))
+                            .font(.system(size: 38))
                     }
 
-                    Text("Buông Lơi Hub")
+                    Text("Buông Lơi Hub v3.0")
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
 
-                    Text("Enterprise Command Center • Hay Day 2D")
+                    Text("Live Cockpit • VPS Telemetry • GDrive Radio • Hay Day 2D")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(Color(white: 0.65))
 
@@ -132,11 +154,11 @@ struct ContentView: View {
                         .font(.system(size: 52))
                         .foregroundColor(emeraldAccent)
 
-                    Text("Không thể kết nối Buông Lơi Hub")
+                    Text("Không thể kết nối máy chủ")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
 
-                    Text("Vui lòng kiểm tra lại kết nối Internet hoặc trạng thái máy chủ hub.buongloi.me.")
+                    Text("Vui lòng kiểm tra lại kết nối Internet hoặc trạng thái hệ thống Buông Lơi.")
                         .font(.subheadline)
                         .foregroundColor(Color(white: 0.68))
                         .multilineTextAlignment(.center)
@@ -172,20 +194,51 @@ struct ContentView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: isLoading)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isOnSubApp)
+        .animation(.easeInOut(duration: 0.22), value: isLoading)
+        .onAppear {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
+    }
+
+    private func switchToTab(_ tab: SuperAppTab) {
+        let impact = UIImpactFeedbackGenerator(style: .light)
+        impact.impactOccurred()
+        selectedTab = tab
+        loadFailed = false
+
+        switch tab {
+        case .cockpit:
+            pendingURL = URL(string: "https://hub.buongloi.me")!
+            pendingJS = "if(window.hubSwitchMode) window.hubSwitchMode('bento');"
+        case .farm:
+            pendingURL = URL(string: "https://hub.buongloi.me")!
+            pendingJS = "if(window.hubSwitchMode) window.hubSwitchMode('2d');"
+        case .report:
+            pendingURL = URL(string: "https://report.buongloi.live")!
+            pendingJS = nil
+        case .crypto:
+            pendingURL = URL(string: "https://bitcoin.buongloi.live")!
+            pendingJS = nil
+        case .music:
+            pendingURL = URL(string: "https://music.buongloi.me")!
+            pendingJS = nil
+        }
+        navCommandToken = UUID()
     }
 }
 
 // MARK: - WKWebView Wrapper
 struct WebViewContainer: UIViewRepresentable {
-    let url: URL
+    let initialURL: URL
+    let pendingURL: URL
+    let pendingJS: String?
     @Binding var isLoading: Bool
     @Binding var loadFailed: Bool
     @Binding var progress: Double
-    @Binding var isOnSubApp: Bool
+    @Binding var selectedTab: SuperAppTab
     let reloadToken: UUID
-    let homeToken: UUID
+    let navCommandToken: UUID
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -197,7 +250,7 @@ struct WebViewContainer: UIViewRepresentable {
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.websiteDataStore = WKWebsiteDataStore.default()
-        config.applicationNameForUserAgent = "BuongLoiHubApp/2.0 (iOS)"
+        config.applicationNameForUserAgent = "BuongLoiHubApp/3.0 (iOS)"
 
         let userContentController = WKUserContentController()
         userContentController.add(context.coordinator, name: "haptic")
@@ -215,28 +268,19 @@ struct WebViewContainer: UIViewRepresentable {
         webView.scrollView.backgroundColor = darkColor
         webView.scrollView.contentInsetAdjustmentBehavior = .never
 
-        // Pull-to-Refresh with Emerald Accent spinner
         let refreshControl = UIRefreshControl()
         refreshControl.tintColor = UIColor(red: 0.063, green: 0.725, blue: 0.506, alpha: 0.95)
         refreshControl.addTarget(context.coordinator, action: #selector(Coordinator.handleRefresh(_:)), for: .valueChanged)
         webView.scrollView.refreshControl = refreshControl
 
-        // Observe loading progress & current URL
         context.coordinator.progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { wv, _ in
             DispatchQueue.main.async {
                 self.progress = wv.estimatedProgress
             }
         }
 
-        context.coordinator.urlObservation = webView.observe(\.url, options: [.new]) { wv, _ in
-            DispatchQueue.main.async {
-                let host = wv.url?.host?.lowercased() ?? ""
-                self.isOnSubApp = !host.isEmpty && host != "hub.buongloi.me"
-            }
-        }
-
         context.coordinator.webView = webView
-        let request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
+        let request = URLRequest(url: initialURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
         webView.load(request)
         return webView
     }
@@ -244,14 +288,23 @@ struct WebViewContainer: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         if context.coordinator.lastReloadToken != reloadToken {
             context.coordinator.lastReloadToken = reloadToken
-            let target = webView.url ?? url
+            let target = webView.url ?? initialURL
             let request = URLRequest(url: target, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
             webView.load(request)
         }
-        if context.coordinator.lastHomeToken != homeToken {
-            context.coordinator.lastHomeToken = homeToken
-            let request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
-            webView.load(request)
+
+        if context.coordinator.lastNavCommandToken != navCommandToken {
+            context.coordinator.lastNavCommandToken = navCommandToken
+            let currentHost = webView.url?.host?.lowercased() ?? ""
+            let targetHost = pendingURL.host?.lowercased() ?? ""
+
+            if currentHost == targetHost, let js = pendingJS {
+                webView.evaluateJavaScript(js, completionHandler: nil)
+            } else {
+                context.coordinator.deferredJS = pendingJS
+                let request = URLRequest(url: pendingURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
+                webView.load(request)
+            }
         }
     }
 
@@ -259,19 +312,18 @@ struct WebViewContainer: UIViewRepresentable {
         var parent: WebViewContainer
         weak var webView: WKWebView?
         var progressObservation: NSKeyValueObservation?
-        var urlObservation: NSKeyValueObservation?
         var lastReloadToken: UUID?
-        var lastHomeToken: UUID?
+        var lastNavCommandToken: UUID?
+        var deferredJS: String?
 
         init(_ parent: WebViewContainer) {
             self.parent = parent
             self.lastReloadToken = parent.reloadToken
-            self.lastHomeToken = parent.homeToken
+            self.lastNavCommandToken = parent.navCommandToken
         }
 
         deinit {
             progressObservation?.invalidate()
-            urlObservation?.invalidate()
         }
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {
@@ -305,8 +357,6 @@ struct WebViewContainer: UIViewRepresentable {
             DispatchQueue.main.async {
                 self.parent.isLoading = false
                 self.parent.loadFailed = false
-                let host = webView.url?.host?.lowercased() ?? ""
-                self.parent.isOnSubApp = !host.isEmpty && host != "hub.buongloi.me"
             }
         }
 
@@ -315,6 +365,10 @@ struct WebViewContainer: UIViewRepresentable {
                 self.parent.isLoading = false
                 self.parent.loadFailed = false
                 webView.scrollView.refreshControl?.endRefreshing()
+                if let js = self.deferredJS {
+                    self.deferredJS = nil
+                    webView.evaluateJavaScript(js, completionHandler: nil)
+                }
             }
         }
 
@@ -341,7 +395,6 @@ struct WebViewContainer: UIViewRepresentable {
             webView.reload()
         }
 
-        // Handle target="_blank" & window.open links across the Buông Lơi Ecosystem
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             guard let targetURL = navigationAction.request.url else { return nil }
             let host = targetURL.host?.lowercased() ?? ""
@@ -349,6 +402,11 @@ struct WebViewContainer: UIViewRepresentable {
             if host.contains("buongloi.live") || host.contains("buongloi.me") || host.contains("buongloi.dev") {
                 let impact = UIImpactFeedbackGenerator(style: .light)
                 impact.impactOccurred()
+                DispatchQueue.main.async {
+                    if host.contains("report.buongloi") { self.parent.selectedTab = .report }
+                    else if host.contains("bitcoin.buongloi") { self.parent.selectedTab = .crypto }
+                    else if host.contains("music.buongloi") { self.parent.selectedTab = .music }
+                }
                 webView.load(navigationAction.request)
             } else {
                 UIApplication.shared.open(targetURL, options: [:], completionHandler: nil)
