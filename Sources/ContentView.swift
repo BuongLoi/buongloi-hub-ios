@@ -3,74 +3,343 @@ import WebKit
 import UIKit
 import AVFoundation
 
+// MARK: - Super App Tabs (v4.0 Hybrid Native + Persistent WebViews)
 enum SuperAppTab: String, CaseIterable {
     case cockpit = "Cockpit"
-    case farm = "Nông Trại"
-    case report = "Báo Cáo"
-    case crypto = "Crypto"
-    case music = "Âm Nhạc"
+    case report  = "Báo Cáo"
+    case crypto  = "Crypto"
+    case news    = "Tin Tức"
+    case farm    = "Nông Trại"
 
     var icon: String {
         switch self {
-        case .cockpit: return "square.grid.2x2.fill"
-        case .farm: return "leaf.fill"
-        case .report: return "chart.bar.xaxis"
-        case .crypto: return "bitcoinsign.circle.fill"
-        case .music: return "headphones"
+        case .cockpit: return "bolt.shield.fill"
+        case .report:  return "chart.bar.doc.horizontal.fill"
+        case .crypto:  return "bitcoinsign.circle.fill"
+        case .news:    return "newspaper.fill"
+        case .farm:    return "leaf.fill"
+        }
+    }
+
+    var webURL: URL? {
+        switch self {
+        case .cockpit: return nil
+        case .report:  return URL(string: "https://report.buongloi.live")
+        case .crypto:  return URL(string: "https://bitcoin.buongloi.live")
+        case .news:    return URL(string: "https://news.buongloi.live")
+        case .farm:    return URL(string: "https://hub.buongloi.me/?mode=2d&embed=ios")
         }
     }
 }
 
-struct ContentView: View {
-    @State private var selectedTab: SuperAppTab = .cockpit
-    @State private var isLoading = true
-    @State private var loadFailed = false
-    @State private var reloadToken = UUID()
-    @State private var navCommandToken = UUID()
-    @State private var pendingURL: URL = URL(string: "https://hub.buongloi.me")!
-    @State private var pendingJS: String? = "if(window.hubSwitchMode) window.hubSwitchMode('bento');"
-    @State private var estimatedProgress: Double = 0.0
+// MARK: - API Models for /api/live-hub
+struct LiveHubResponse: Codable {
+    let updated_at: Double?
+    let vps: VpsTelemetry?
+    let bitcoin: CryptoTelemetry?
+    let weather: WeatherTelemetry?
+    let news: NewsTelemetry?
+    let giveaway: GiveawayTelemetry?
+    let music: MusicTelemetry?
+    let health: HealthTelemetry?
+}
 
-    private let hubURL = URL(string: "https://hub.buongloi.me")!
-    private let bgDark = Color(red: 0.047, green: 0.047, blue: 0.114)       // #0C0C1D
-    private let emeraldAccent = Color(red: 0.063, green: 0.725, blue: 0.506) // #10B981
-    private let purpleAccent = Color(red: 0.655, green: 0.545, blue: 0.980)  // #A78BFA
+struct VpsTelemetry: Codable {
+    let cpu_pct: Double?
+    let ram_used_gb: Double?
+    let ram_total_gb: Double?
+    let ram_pct: Double?
+    let swap_used_mb: Double?
+    let swap_total_mb: Double?
+    let swap_pct: Double?
+    let disk_used_gb: String?
+    let disk_total_gb: String?
+    let disk_pct: Int?
+    let uptime_str: String?
+    let load_avg: String?
+    let services: [SystemdServiceItem]?
+}
+
+struct SystemdServiceItem: Codable, Identifiable {
+    var id: String { unit }
+    let unit: String
+    let label: String
+    let active: Bool
+}
+
+struct CryptoTelemetry: Codable {
+    let price: Double?
+    let change_24h_pct: Double?
+    let high_24h: Double?
+    let low_24h: Double?
+    let rsi_14: Int?
+    let eth_price: Double?
+    let eth_change_pct: Double?
+    let sol_price: Double?
+    let sol_change_pct: Double?
+    let fear_greed_val: Int?
+    let fear_greed_label: String?
+    let sparkline: [Double]?
+}
+
+struct WeatherTelemetry: Codable {
+    let city: String?
+    let temp: Double?
+    let feels_like: Double?
+    let humidity: Int?
+    let wind_speed: Double?
+    let description: String?
+}
+
+struct NewsTelemetry: Codable {
+    let total_articles: Int?
+    let headlines: [HeadlineItem]?
+}
+
+struct HeadlineItem: Codable, Identifiable {
+    var id: String { (title ?? "") + (url ?? "") }
+    let title: String?
+    let source: String?
+    let category: String?
+    let summary: String?
+    let url: String?
+}
+
+struct GiveawayTelemetry: Codable {
+    let total: Int?
+    let recent: [GiveawayItem]?
+}
+
+struct GiveawayItem: Codable, Identifiable {
+    var id: String { (title ?? "") + (url ?? "") }
+    let title: String?
+    let source: String?
+    let url: String?
+}
+
+struct MusicTelemetry: Codable {
+    let total_tracks: Int?
+    let tracks: [MusicTrackItem]?
+}
+
+struct MusicTrackItem: Codable, Identifiable {
+    var id: Int { idx }
+    let idx: Int
+    let title: String
+    let artist: String
+}
+
+struct HealthTelemetry: Codable {
+    let online_count: Int?
+    let total_count: Int?
+    let avg_latency_ms: Int?
+    let results: [String: HealthPingItem]?
+}
+
+struct HealthPingItem: Codable {
+    let ok: Bool?
+    let latency_ms: Int?
+}
+
+// MARK: - 14 Ecosystem App Metadata for Native Launchpad
+struct EcosystemApp: Identifiable {
+    let id: String
+    let name: String
+    let role: String
+    let category: String
+    let sfSymbol: String
+    let hexColor: Color
+    let urlString: String
+    let healthKey: String
+}
+
+let ECOSYSTEM_APPS: [EcosystemApp] = [
+    EcosystemApp(id: "bitcoin", name: "Bitcoin Dashboard", role: "On-Chain & Scalping", category: "Crypto", sfSymbol: "bitcoinsign.circle.fill", hexColor: Color(red: 0.98, green: 0.75, blue: 0.14), urlString: "https://bitcoin.buongloi.live", healthKey: "https://bitcoin.buongloi.live"),
+    EcosystemApp(id: "report", name: "Report Hub", role: "P&L & Sales 3GB", category: "Analytics", sfSymbol: "chart.bar.xaxis", hexColor: Color(red: 0.94, green: 0.27, blue: 0.27), urlString: "https://report.buongloi.live", healthKey: "https://report.buongloi.live"),
+    EcosystemApp(id: "news", name: "News Digest AI", role: "Điểm Tin AI & TTS", category: "AI", sfSymbol: "newspaper.fill", hexColor: Color(red: 0.20, green: 0.83, blue: 0.60), urlString: "https://news.buongloi.live", healthKey: "https://news.buongloi.live"),
+    EcosystemApp(id: "weather", name: "Thiên Tượng", role: "Khí Tượng & Radar", category: "Utility", sfSymbol: "cloud.sun.rain.fill", hexColor: Color(red: 0.22, green: 0.74, blue: 0.97), urlString: "https://weather.buongloi.me", healthKey: "https://weather.buongloi.me/api/health"),
+    EcosystemApp(id: "music", name: "Buông Lơi Music", role: "GDrive Audio 30GB", category: "Media", sfSymbol: "headphones", hexColor: Color(red: 0.11, green: 0.73, blue: 0.33), urlString: "https://music.buongloi.me", healthKey: "https://music.buongloi.me"),
+    EcosystemApp(id: "keyin", name: "KeyIn Master Data", role: "Đối Soát 170k+ SKU", category: "Analytics", sfSymbol: "cylinder.split.1x2.fill", hexColor: Color(red: 0.38, green: 0.65, blue: 0.98), urlString: "https://keyin.buongloi.dev", healthKey: "https://keyin.buongloi.dev"),
+    EcosystemApp(id: "giveaway", name: "Giveaway Bot", role: "Săn Kèo Bản Quyền", category: "Tools", sfSymbol: "gift.fill", hexColor: Color(red: 0.96, green: 0.25, blue: 0.37), urlString: "https://giveaway.buongloi.live", healthKey: "https://giveaway.buongloi.live"),
+    EcosystemApp(id: "tickit", name: "TickIt Countdown", role: "Cozy Lofi Timer", category: "Utility", sfSymbol: "timer", hexColor: Color(red: 0.75, green: 0.52, blue: 0.99), urlString: "https://tickit.buongloi.live", healthKey: "https://tickit.buongloi.live"),
+    EcosystemApp(id: "pptx", name: "PPTX Generator", role: "Tự Động Hóa Slide", category: "Tools", sfSymbol: "rectangle.stack.badge.play.fill", hexColor: Color(red: 0.65, green: 0.55, blue: 0.98), urlString: "https://pptx.buongloi.live", healthKey: "https://pptx.buongloi.live/api/health"),
+    EcosystemApp(id: "price", name: "Price Checker", role: "Tra Cứu Giá POS", category: "Retail", sfSymbol: "tag.fill", hexColor: Color(red: 0.98, green: 0.44, blue: 0.40), urlString: "https://pptx.buongloi.live/price-checker", healthKey: "https://pptx.buongloi.live/api/health"),
+    EcosystemApp(id: "barcode", name: "Barcode Overlay", role: "In Tem Nhãn Giá", category: "Retail", sfSymbol: "barcode.viewfinder", hexColor: Color(red: 0.92, green: 0.35, blue: 0.05), urlString: "https://pptx.buongloi.live/barcode", healthKey: "https://pptx.buongloi.live/api/health"),
+    EcosystemApp(id: "warranty", name: "Warranty Manager", role: "Quản Lý Bảo Hành", category: "Retail", sfSymbol: "checkmark.shield.fill", hexColor: Color(red: 0.85, green: 0.47, blue: 0.02), urlString: "https://pptx.buongloi.live/warranty", healthKey: "https://pptx.buongloi.live/api/health"),
+    EcosystemApp(id: "gmail", name: "Gmail Manager", role: "Điều Phối Hộp Thư", category: "Tools", sfSymbol: "envelope.fill", hexColor: Color(red: 0.01, green: 0.52, blue: 0.78), urlString: "https://gmail.buongloi.live", healthKey: "https://gmail.buongloi.live"),
+    EcosystemApp(id: "reels", name: "Reels Audio Bot", role: "Bot Trích Xuất MP3", category: "Media", sfSymbol: "waveform.circle.fill", hexColor: Color(red: 0.05, green: 0.58, blue: 0.53), urlString: "https://t.me/ReelsAudioBot", healthKey: "https://music.buongloi.me")
+]
+
+struct SheetWebTarget: Identifiable {
+    let id = UUID()
+    let title: String
+    let url: URL
+}
+
+// MARK: - Live Hub ViewModel & Native AVPlayer Cloud Streamer
+@MainActor
+final class LiveHubViewModel: ObservableObject {
+    @Published var data: LiveHubResponse?
+    @Published var isSyncing: Bool = false
+    @Published var feedTab: Int = 0 // 0 = News, 1 = Giveaways
+    @Published var isPlayingAudio: Bool = false
+    @Published var currentTrackIndex: Int = 0
+
+    private var player: AVPlayer?
+    private var endObserver: NSObjectProtocol?
+
+    func fetchLiveHub(force: Bool = false) async {
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let urlStr = force ? "https://hub.buongloi.me/api/live-hub?force=1" : "https://hub.buongloi.me/api/live-hub"
+        guard let url = URL(string: urlStr) else { return }
+
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 18)
+        req.setValue("BuongLoiHubNative/4.0 (iOS)", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (raw, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 200 {
+                let decoded = try JSONDecoder().decode(LiveHubResponse.self, from: raw)
+                self.data = decoded
+            }
+        } catch {
+            // Keep existing cached data if offline
+        }
+    }
+
+    var tracks: [MusicTrackItem] {
+        data?.music?.tracks ?? []
+    }
+
+    var currentTrackTitle: String {
+        guard !tracks.isEmpty, currentTrackIndex >= 0, currentTrackIndex < tracks.count else {
+            return "Buông Lơi GDrive Studio"
+        }
+        return tracks[currentTrackIndex].title
+    }
+
+    var currentTrackArtist: String {
+        guard !tracks.isEmpty, currentTrackIndex >= 0, currentTrackIndex < tracks.count else {
+            return "Nhấn ▶️ để stream nhạc từ Google Drive"
+        }
+        return "\(tracks[currentTrackIndex].artist) · Cloud Stream"
+    }
+
+    func togglePlay() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if isPlayingAudio {
+            player?.pause()
+            isPlayingAudio = false
+        } else {
+            if player != nil {
+                player?.play()
+                isPlayingAudio = true
+            } else {
+                let startIdx = tracks.isEmpty ? 0 : Int.random(in: 0..<tracks.count)
+                playTrack(at: startIdx)
+            }
+        }
+    }
+
+    func playTrack(at index: Int) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let list = tracks
+        let safeIdx = list.isEmpty ? 0 : ((index % list.count) + list.count) % list.count
+        currentTrackIndex = safeIdx
+        let streamIdx = list.isEmpty ? 0 : list[safeIdx].idx
+
+        guard let streamURL = URL(string: "https://hub.buongloi.me/api/music/stream?idx=\(streamIdx)") else { return }
+
+        if let oldObs = endObserver {
+            NotificationCenter.default.removeObserver(oldObs)
+        }
+
+        let item = AVPlayerItem(url: streamURL)
+        if player == nil {
+            player = AVPlayer(playerItem: item)
+        } else {
+            player?.replaceCurrentItem(with: item)
+        }
+
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.playTrack(at: self.currentTrackIndex + 1)
+            }
+        }
+
+        player?.play()
+        isPlayingAudio = true
+    }
+
+    func nextTrack() {
+        playTrack(at: currentTrackIndex + 1)
+    }
+
+    func prevTrack() {
+        playTrack(at: currentTrackIndex - 1)
+    }
+}
+
+// MARK: - Main Super App View
+struct ContentView: View {
+    @StateObject private var vm = LiveHubViewModel()
+    @State private var selectedTab: SuperAppTab = .cockpit
+    @State private var activeSheet: SheetWebTarget?
+
+    private let bgDark = Color(red: 0.035, green: 0.043, blue: 0.098)       // #090B19
+    private let cardBg = Color(red: 0.082, green: 0.098, blue: 0.196)       // #151932
+    private let emeraldAccent = Color(red: 0.204, green: 0.827, blue: 0.600) // #34D399
+    private let amberAccent = Color(red: 0.984, green: 0.749, blue: 0.141)   // #FBBF24
 
     var body: some View {
-        ZStack(alignment: .top) {
-            bgDark
-                .ignoresSafeArea(.all)
+        ZStack(alignment: .bottom) {
+            bgDark.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Main WebView Viewport
-                WebViewContainer(
-                    initialURL: hubURL,
-                    pendingURL: pendingURL,
-                    pendingJS: pendingJS,
-                    isLoading: $isLoading,
-                    loadFailed: $loadFailed,
-                    progress: $estimatedProgress,
-                    selectedTab: $selectedTab,
-                    reloadToken: reloadToken,
-                    navCommandToken: navCommandToken
-                )
+                // Viewport Area: Either Pure Native SwiftUI Cockpit OR Persistent WebView Deck
+                ZStack {
+                    // Persistent WebViews for Tabs 2..5 (kept alive in memory so switching is instant)
+                    PersistentWebDeck(selectedTab: selectedTab)
+                        .opacity(selectedTab == .cockpit ? 0 : 1)
+                        .allowsHitTesting(selectedTab != .cockpit)
+
+                    // Tab 1: Pure Native SwiftUI 120Hz Executive Cockpit
+                    if selectedTab == .cockpit {
+                        NativeCockpitScrollView(
+                            vm: vm,
+                            selectedTab: $selectedTab,
+                            activeSheet: $activeSheet
+                        )
+                        .transition(.opacity)
+                    }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Native iOS Super App Glassmorphic Bottom TabBar
+                // Native Glassmorphic 5-Tab Bar
                 HStack(spacing: 0) {
                     ForEach(SuperAppTab.allCases, id: \.self) { tab in
-                        Button(action: {
-                            switchToTab(tab)
-                        }) {
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                selectedTab = tab
+                            }
+                        } label: {
                             VStack(spacing: 4) {
                                 Image(systemName: tab.icon)
                                     .font(.system(size: 18, weight: selectedTab == tab ? .bold : .medium))
-                                    .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.58))
-                                    .scaleEffect(selectedTab == tab ? 1.1 : 1.0)
+                                    .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.55))
+                                    .scaleEffect(selectedTab == tab ? 1.08 : 1.0)
 
                                 Text(tab.rawValue)
                                     .font(.system(size: 10.5, weight: selectedTab == tab ? .bold : .medium, design: .rounded))
-                                    .foregroundColor(selectedTab == tab ? .white : Color(white: 0.58))
+                                    .foregroundColor(selectedTab == tab ? .white : Color(white: 0.55))
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.top, 9)
@@ -79,9 +348,9 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 6)
                 .background(
-                    Color(red: 0.055, green: 0.065, blue: 0.135)
+                    Color(red: 0.047, green: 0.059, blue: 0.125)
                         .overlay(
                             Rectangle()
                                 .fill(Color.white.opacity(0.09))
@@ -91,327 +360,894 @@ struct ContentView: View {
                         .ignoresSafeArea(edges: .bottom)
                 )
             }
-
-            // Top Loading Progress Bar
-            if isLoading && estimatedProgress < 1.0 {
-                GeometryReader { geo in
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                gradient: Gradient(colors: [emeraldAccent, purpleAccent]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: geo.size.width * CGFloat(estimatedProgress), height: 3)
-                        .animation(.linear(duration: 0.2), value: estimatedProgress)
-                }
-                .frame(height: 3)
-            }
-
-            // Initial Splash Screen
-            if isLoading && estimatedProgress < 0.28 && selectedTab == .cockpit {
-                VStack(spacing: 16) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [emeraldAccent, purpleAccent],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 74, height: 74)
-                            .shadow(color: emeraldAccent.opacity(0.35), radius: 16, x: 0, y: 6)
-
-                        Text("⚡")
-                            .font(.system(size: 38))
-                    }
-
-                    Text("Buông Lơi Hub v3.0")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-
-                    Text("Live Cockpit • VPS Telemetry • GDrive Radio • Hay Day 2D")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Color(white: 0.65))
-
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: emeraldAccent))
-                        .scaleEffect(1.2)
-                        .padding(.top, 6)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(bgDark)
-                .ignoresSafeArea(.all)
-                .transition(.opacity)
-            }
-
-            // Offline / Connection Error View
-            if loadFailed {
-                VStack(spacing: 20) {
-                    Image(systemName: "wifi.exclamationmark")
-                        .font(.system(size: 52))
-                        .foregroundColor(emeraldAccent)
-
-                    Text("Không thể kết nối máy chủ")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-
-                    Text("Vui lòng kiểm tra lại kết nối Internet hoặc trạng thái hệ thống Buông Lơi.")
-                        .font(.subheadline)
-                        .foregroundColor(Color(white: 0.68))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-
-                    Button(action: {
-                        let impact = UIImpactFeedbackGenerator(style: .medium)
-                        impact.impactOccurred()
-                        loadFailed = false
-                        isLoading = true
-                        reloadToken = UUID()
-                    }) {
-                        Label("Thử lại ngay", systemImage: "arrow.clockwise")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 28)
-                            .padding(.vertical, 12)
-                            .background(
-                                LinearGradient(
-                                    colors: [emeraldAccent, purpleAccent],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .cornerRadius(24)
-                            .shadow(color: emeraldAccent.opacity(0.35), radius: 8, x: 0, y: 4)
-                    }
-                    .padding(.top, 4)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(bgDark)
-                .ignoresSafeArea(.all)
-                .transition(.opacity)
-            }
         }
-        .animation(.easeInOut(duration: 0.22), value: isLoading)
+        .sheet(item: $activeSheet) { item in
+            InAppBrowserSheet(target: item)
+        }
         .onAppear {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try? AVAudioSession.sharedInstance().setActive(true)
+            Task {
+                await vm.fetchLiveHub(force: false)
+            }
         }
-    }
-
-    private func switchToTab(_ tab: SuperAppTab) {
-        let impact = UIImpactFeedbackGenerator(style: .light)
-        impact.impactOccurred()
-        selectedTab = tab
-        loadFailed = false
-
-        switch tab {
-        case .cockpit:
-            pendingURL = URL(string: "https://hub.buongloi.me")!
-            pendingJS = "if(window.hubSwitchMode) window.hubSwitchMode('bento');"
-        case .farm:
-            pendingURL = URL(string: "https://hub.buongloi.me")!
-            pendingJS = "if(window.hubSwitchMode) window.hubSwitchMode('2d');"
-        case .report:
-            pendingURL = URL(string: "https://report.buongloi.live")!
-            pendingJS = nil
-        case .crypto:
-            pendingURL = URL(string: "https://bitcoin.buongloi.live")!
-            pendingJS = nil
-        case .music:
-            pendingURL = URL(string: "https://music.buongloi.me")!
-            pendingJS = nil
-        }
-        navCommandToken = UUID()
     }
 }
 
-// MARK: - WKWebView Wrapper
-struct WebViewContainer: UIViewRepresentable {
-    let initialURL: URL
-    let pendingURL: URL
-    let pendingJS: String?
-    @Binding var isLoading: Bool
-    @Binding var loadFailed: Bool
-    @Binding var progress: Double
+// MARK: - Tab 1: Pure Native SwiftUI Executive Cockpit
+struct NativeCockpitScrollView: View {
+    @ObservedObject var vm: LiveHubViewModel
     @Binding var selectedTab: SuperAppTab
-    let reloadToken: UUID
-    let navCommandToken: UUID
+    @Binding var activeSheet: SheetWebTarget?
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+    private let panelBg = LinearGradient(
+        colors: [Color(red: 0.094, green: 0.106, blue: 0.220), Color(red: 0.055, green: 0.063, blue: 0.141)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    private let emerald = Color(red: 0.204, green: 0.827, blue: 0.600)
+    private let amber = Color(red: 0.984, green: 0.749, blue: 0.141)
+    private let sky = Color(red: 0.220, green: 0.741, blue: 0.973)
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 16) {
+                // 1. Top Native Executive Header
+                headerSection
+
+                // 2. Native Crypto Terminal Card + Sparkline
+                cryptoCard
+
+                // 3. Native RackNerd VPS + 14-Service Systemd Matrix
+                vpsMatrixCard
+
+                // 4. Native Sài Gòn Weather + Native AVPlayer GDrive Deck
+                weatherAndMusicCard
+
+                // 5. Native AI News & Giveaways Feed
+                intelligenceFeedCard
+
+                // 6. Native 14-App Vector Launchpad Grid
+                launchpadGridSection
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
+        }
+        .refreshable {
+            await vm.fetchLiveHub(force: true)
+        }
     }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.websiteDataStore = WKWebsiteDataStore.default()
-        config.applicationNameForUserAgent = "BuongLoiHubApp/3.0 (iOS)"
+    // MARK: Header
+    private var headerSection: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [emerald, Color(red: 0.23, green: 0.51, blue: 0.96)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 44, height: 44)
 
-        let userContentController = WKUserContentController()
-        userContentController.add(context.coordinator, name: "haptic")
-        config.userContentController = userContentController
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 20, weight: .black))
+                    .foregroundColor(.white)
+            }
 
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
-        webView.scrollView.bounces = true
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Buông Lơi Hub")
+                        .font(.system(size: 19, weight: .heavy, design: .rounded))
+                        .foregroundColor(.white)
 
-        let darkColor = UIColor(red: 0.047, green: 0.047, blue: 0.114, alpha: 1.0)
-        webView.backgroundColor = darkColor
-        webView.isOpaque = false
-        webView.scrollView.backgroundColor = darkColor
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
+                    Text("PRO v4.0")
+                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                        .foregroundColor(emerald)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(emerald.opacity(0.16))
+                        .clipShape(Capsule())
+                }
 
-        let refreshControl = UIRefreshControl()
-        refreshControl.tintColor = UIColor(red: 0.063, green: 0.725, blue: 0.506, alpha: 0.95)
-        refreshControl.addTarget(context.coordinator, action: #selector(Coordinator.handleRefresh(_:)), for: .valueChanged)
-        webView.scrollView.refreshControl = refreshControl
+                Text("Native iOS Executive Command Center")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(Color(white: 0.62))
+            }
 
-        context.coordinator.progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { wv, _ in
-            DispatchQueue.main.async {
-                self.progress = wv.estimatedProgress
+            Spacer()
+
+            Button {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                Task { await vm.fetchLiveHub(force: true) }
+            } label: {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(emerald)
+                        .frame(width: 7, height: 7)
+                    Text("\(vm.data?.health?.online_count ?? 14)/14")
+                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(emerald)
+                        .rotationEffect(.degrees(vm.isSyncing ? 360 : 0))
+                        .animation(vm.isSyncing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: vm.isSyncing)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.07))
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
             }
         }
-
-        context.coordinator.webView = webView
-        let request = URLRequest(url: initialURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
-        webView.load(request)
-        return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        if context.coordinator.lastReloadToken != reloadToken {
-            context.coordinator.lastReloadToken = reloadToken
-            let target = webView.url ?? initialURL
-            let request = URLRequest(url: target, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
-            webView.load(request)
+    // MARK: Panel 1 — Crypto Terminal Card
+    private var cryptoCard: some View {
+        let btc = vm.data?.bitcoin
+        let price = btc?.price ?? 84520.0
+        let chg = btc?.change_24h_pct ?? 1.43
+        let isUp = chg >= 0
+        let rsi = btc?.rsi_14 ?? 54
+        let spark = btc?.sparkline ?? [83900, 84100, 84050, 84320, 84280, 84520]
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HStack(spacing: 6) {
+                    Circle().fill(amber).frame(width: 8, height: 8)
+                    Text("CRYPTO RADAR · LIVE BINANCE")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(white: 0.65))
+                }
+                Spacer()
+                Button {
+                    selectedTab = .crypto
+                } label: {
+                    Text("Mở Terminal ↗")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(emerald)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(emerald.opacity(0.14))
+                        .clipShape(Capsule())
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("BTC / USDT")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Color(white: 0.6))
+                    Text(String(format: "$%.2f", price))
+                        .font(.system(size: 28, weight: .black, design: .monospaced))
+                        .foregroundColor(amber)
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    Text(String(format: "%@%.2f%%", isUp ? "+" : "", chg))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(isUp ? emerald : Color.red)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background((isUp ? emerald : Color.red).opacity(0.16))
+                        .clipShape(Capsule())
+
+                    Text("RSI \(rsi)")
+                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 0.77, green: 0.71, blue: 0.99))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.purple.opacity(0.2))
+                        .clipShape(Capsule())
+                }
+            }
+
+            // Native SwiftUI 24h Sparkline
+            SparklineShapeView(points: spark, isUp: isUp)
+                .frame(height: 52)
+
+            // Sub Tickers: ETH, SOL, Fear & Greed
+            HStack(spacing: 8) {
+                subTickerPill(
+                    sym: "ETH",
+                    val: String(format: "$%.0f", btc?.eth_price ?? 1985),
+                    chg: String(format: "%@%.1f%%", (btc?.eth_change_pct ?? 0) >= 0 ? "+" : "", btc?.eth_change_pct ?? 1.2),
+                    isUp: (btc?.eth_change_pct ?? 0) >= 0
+                )
+                subTickerPill(
+                    sym: "SOL",
+                    val: String(format: "$%.1f", btc?.sol_price ?? 138.4),
+                    chg: String(format: "%@%.1f%%", (btc?.sol_change_pct ?? 0) >= 0 ? "+" : "", btc?.sol_change_pct ?? 2.4),
+                    isUp: (btc?.sol_change_pct ?? 0) >= 0
+                )
+                subTickerPill(
+                    sym: "F&G",
+                    val: "\(btc?.fear_greed_val ?? 55)",
+                    chg: btc?.fear_greed_label ?? "Greed",
+                    isUp: true
+                )
+            }
         }
+        .padding(16)
+        .background(panelBg)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 1)
+        )
+    }
 
-        if context.coordinator.lastNavCommandToken != navCommandToken {
-            context.coordinator.lastNavCommandToken = navCommandToken
-            let currentHost = webView.url?.host?.lowercased() ?? ""
-            let targetHost = pendingURL.host?.lowercased() ?? ""
+    private func subTickerPill(sym: String, val: String, chg: String, isUp: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text(sym)
+                .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                .foregroundColor(Color(white: 0.58))
+            Spacer(minLength: 2)
+            Text(val)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Text(chg)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(isUp ? emerald : Color.red)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Color.black.opacity(0.26))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
 
-            if currentHost == targetHost, let js = pendingJS {
-                webView.evaluateJavaScript(js, completionHandler: nil)
+    // MARK: Panel 2 — RackNerd VPS & 14-Service Systemd Matrix
+    private var vpsMatrixCard: some View {
+        let vps = vm.data?.vps
+        let services = vps?.services ?? []
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HStack(spacing: 6) {
+                    Circle().fill(emerald).frame(width: 8, height: 8)
+                    Text("VPS 192.210.254.38 · UBUNTU 24.04")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(white: 0.65))
+                }
+                Spacer()
+                Text("Up: \(vps?.uptime_str ?? "9d 7h")")
+                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(emerald)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(emerald.opacity(0.14))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 8) {
+                vpsMeter(label: "CPU", val: String(format: "%.0f%%", vps?.cpu_pct ?? 6), pct: (vps?.cpu_pct ?? 6) / 100.0)
+                vpsMeter(label: "RAM", val: String(format: "%.1fG", vps?.ram_used_gb ?? 2.1), pct: (vps?.ram_pct ?? 55) / 100.0)
+                vpsMeter(label: "SSD", val: "\(vps?.disk_pct ?? 57)%", pct: Double(vps?.disk_pct ?? 57) / 100.0)
+                vpsMeter(label: "SWAP", val: String(format: "%.0fM", vps?.swap_used_mb ?? 980), pct: (vps?.swap_pct ?? 48) / 100.0)
+            }
+
+            if !services.isEmpty {
+                Text("TRẠNG THÁI 14 SYSTEMD DAEMONS TRÊN VPS")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(white: 0.58))
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                    ForEach(services) { svc in
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(svc.active ? emerald : Color.red)
+                                .frame(width: 6, height: 6)
+                            Text(svc.label)
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(panelBg)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 1)
+        )
+    }
+
+    private func vpsMeter(label: String, val: String, pct: Double) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(white: 0.58))
+                Spacer()
+                Text(val)
+                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.1))
+                    Capsule()
+                        .fill(pct > 0.85 ? Color.red : (pct > 0.68 ? amber : emerald))
+                        .frame(width: max(4, geo.size.width * CGFloat(min(1.0, max(0.05, pct)))))
+                }
+            }
+            .frame(height: 5)
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.25))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // MARK: Panel 3 — Sài Gòn Weather + Native GDrive Audio Deck
+    private var weatherAndMusicCard: some View {
+        let w = vm.data?.weather
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HStack(spacing: 6) {
+                    Circle().fill(sky).frame(width: 8, height: 8)
+                    Text("THIÊN TƯỢNG · TP. HỒ CHÍ MINH")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(white: 0.65))
+                }
+                Spacer()
+                Button {
+                    if let u = URL(string: "https://weather.buongloi.me") {
+                        activeSheet = SheetWebTarget(title: "Thiên Tượng Radar", url: u)
+                    }
+                } label: {
+                    Text("Radar ↗")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(sky)
+                }
+            }
+
+            HStack(spacing: 14) {
+                Text(String(format: "%.0f°C", w?.temp ?? 27))
+                    .font(.system(size: 32, weight: .black, design: .monospaced))
+                    .foregroundColor(sky)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text((w?.description ?? "Có mây").capitalized)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+
+                    HStack(spacing: 8) {
+                        Text("💧 \(w?.humidity ?? 78)%")
+                        Text("💨 \(String(format: "%.0f", w?.wind_speed ?? 7)) km/h")
+                        Text("🌡️ Cảm giác \(String(format: "%.0f°C", w?.feels_like ?? 29))")
+                    }
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color(white: 0.68))
+                }
+                Spacer()
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            // Native AVPlayer GDrive Studio Deck
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.green.opacity(0.2))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: vm.isPlayingAudio ? "waveform" : "music.note")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(Color.green)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vm.currentTrackTitle)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Text(vm.currentTrackArtist)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(white: 0.62))
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 8) {
+                        Button(action: { vm.prevTrack() }) {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 32, height: 32)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+
+                        Button(action: { vm.togglePlay() }) {
+                            Image(systemName: vm.isPlayingAudio ? "pause.fill" : "play.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.green)
+                                .clipShape(Circle())
+                        }
+
+                        Button(action: { vm.nextTrack() }) {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 32, height: 32)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                    }
+                }
+
+                if !vm.tracks.isEmpty {
+                    HStack {
+                        Menu {
+                            ForEach(Array(vm.tracks.prefix(40).enumerated()), id: \.offset) { idx, t in
+                                Button("🎵 \(t.title) — \(t.artist)") {
+                                    vm.playTrack(at: idx)
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note.list")
+                                    .font(.system(size: 11))
+                                Text("Chọn nhanh từ \(vm.data?.music?.total_tracks ?? vm.tracks.count) bài nhạc Google Drive")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        }
+
+                        Button {
+                            if let u = URL(string: "https://music.buongloi.me") {
+                                activeSheet = SheetWebTarget(title: "Buông Lơi Music", url: u)
+                            }
+                        } label: {
+                            Text("Full App ↗")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color.green)
+                                .padding(.horizontal, 8)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.black.opacity(0.28))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.green.opacity(0.28), lineWidth: 1)
+            )
+        }
+        .padding(16)
+        .background(panelBg)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 1)
+        )
+    }
+
+    // MARK: Panel 4 — Live Intelligence Feed (AI News & Giveaways)
+    private var intelligenceFeedCard: some View {
+        let headlines = vm.data?.news?.headlines ?? []
+        let giveaways = vm.data?.giveaway?.recent ?? []
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HStack(spacing: 6) {
+                    Button {
+                        vm.feedTab = 0
+                    } label: {
+                        Text("📰 Tin Nóng AI (\(vm.data?.news?.total_articles ?? 4023))")
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(vm.feedTab == 0 ? .white : Color(white: 0.6))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(vm.feedTab == 0 ? emerald.opacity(0.22) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+
+                    Button {
+                        vm.feedTab = 1
+                    } label: {
+                        Text("🎁 Bản Quyền (\(vm.data?.giveaway?.total ?? 63))")
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(vm.feedTab == 1 ? .white : Color(white: 0.6))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(vm.feedTab == 1 ? emerald.opacity(0.22) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
+                .padding(3)
+                .background(Color.black.opacity(0.28))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                Spacer()
+
+                Button {
+                    if vm.feedTab == 0 {
+                        selectedTab = .news
+                    } else if let u = URL(string: "https://giveaway.buongloi.live") {
+                        activeSheet = SheetWebTarget(title: "Giveaway Bot", url: u)
+                    }
+                } label: {
+                    Text("Tất cả ↗")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(emerald)
+                }
+            }
+
+            VStack(spacing: 7) {
+                if vm.feedTab == 0 {
+                    ForEach(headlines.prefix(5)) { item in
+                        Button {
+                            if let s = item.url, let u = URL(string: s) {
+                                activeSheet = SheetWebTarget(title: item.source ?? "Tin Nóng AI", url: u)
+                            } else {
+                                selectedTab = .news
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(item.source ?? "AI")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .foregroundColor(emerald)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(emerald.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                                Text(item.title ?? "")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(Color(white: 0.5))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.22))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+                } else {
+                    ForEach(giveaways.prefix(5)) { item in
+                        Button {
+                            if let s = item.url, let u = URL(string: s) {
+                                activeSheet = SheetWebTarget(title: item.source ?? "Giveaway", url: u)
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(item.source ?? "FREE")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Color.pink)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.pink.opacity(0.16))
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                                Text(item.title ?? "")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(Color(white: 0.5))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.22))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(panelBg)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 1)
+        )
+    }
+
+    // MARK: Section 6 — Native 14-App Vector Launchpad Grid
+    private var launchpadGridSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("🚀 TRẠM KHỞI CHẠY 14 ỨNG DỤNG")
+                    .font(.system(size: 12, weight: .heavy, design: .monospaced))
+                    .foregroundColor(Color(white: 0.75))
+                Spacer()
+                Button {
+                    selectedTab = .farm
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("🌾 Nông Trại 2D")
+                            .font(.system(size: 11.5, weight: .bold))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundColor(emerald)
+                }
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                ForEach(ECOSYSTEM_APPS) { app in
+                    let ping = vm.data?.health?.results?[app.healthKey]
+                    let isUp = ping?.ok ?? true
+                    let ms = ping?.latency_ms ?? 0
+
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        if app.id == "report" {
+                            selectedTab = .report
+                        } else if app.id == "bitcoin" {
+                            selectedTab = .crypto
+                        } else if app.id == "news" {
+                            selectedTab = .news
+                        } else if let u = URL(string: app.urlString) {
+                            activeSheet = SheetWebTarget(title: app.name, url: u)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(app.hexColor.opacity(0.18))
+                                        .frame(width: 40, height: 40)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                .stroke(app.hexColor.opacity(0.4), lineWidth: 1)
+                                        )
+
+                                    Image(systemName: app.sfSymbol)
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(app.hexColor)
+                                }
+
+                                Spacer()
+
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(isUp ? emerald : Color.red)
+                                        .frame(width: 6, height: 6)
+                                    Text(ms > 0 ? "\(ms)ms" : "Online")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundColor(Color(white: 0.7))
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.black.opacity(0.28))
+                                .clipShape(Capsule())
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(app.name)
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+
+                                Text(app.role)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color(white: 0.6))
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(13)
+                        .background(panelBg)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Native SwiftUI 24h Sparkline Chart
+struct SparklineShapeView: View {
+    let points: [Double]
+    let isUp: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let minVal = points.min() ?? 0
+            let maxVal = points.max() ?? 1
+            let range = max(maxVal - minVal, 1)
+            let strokeColor = isUp ? Color(red: 0.204, green: 0.827, blue: 0.600) : Color.red
+
+            if points.count > 1 {
+                ZStack {
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: h))
+                        for (idx, val) in points.enumerated() {
+                            let x = (CGFloat(idx) / CGFloat(points.count - 1)) * w
+                            let y = h - CGFloat((val - minVal) / range) * (h - 8) - 4
+                            path.addLine(to: CGPoint(x: x, y: y))
+                        }
+                        path.addLine(to: CGPoint(x: w, y: h))
+                        path.closeSubpath()
+                    }
+                    .fill(
+                        LinearGradient(
+                            colors: [strokeColor.opacity(0.32), strokeColor.opacity(0.0)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                    Path { path in
+                        for (idx, val) in points.enumerated() {
+                            let x = (CGFloat(idx) / CGFloat(points.count - 1)) * w
+                            let y = h - CGFloat((val - minVal) / range) * (h - 8) - 4
+                            if idx == 0 {
+                                path.move(to: CGPoint(x: x, y: y))
+                            } else {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                            }
+                        }
+                    }
+                    .stroke(strokeColor, style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Persistent Multi-WebView Deck for Tabs 2..5 (Zero Reload Switching)
+struct PersistentWebDeck: UIViewRepresentable {
+    let selectedTab: SuperAppTab
+
+    func makeCoordinator() -> DeckCoordinator {
+        DeckCoordinator()
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView(frame: .zero)
+        container.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.098, alpha: 1.0)
+        context.coordinator.containerView = container
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.showTab(selectedTab)
+    }
+
+    final class DeckCoordinator: NSObject, WKScriptMessageHandler {
+        weak var containerView: UIView?
+        private var webViews: [SuperAppTab: WKWebView] = [:]
+
+        func showTab(_ tab: SuperAppTab) {
+            guard let container = containerView, let targetURL = tab.webURL else { return }
+
+            let wv: WKWebView
+            if let existing = webViews[tab] {
+                wv = existing
             } else {
-                context.coordinator.deferredJS = pendingJS
-                let request = URLRequest(url: pendingURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25)
-                webView.load(request)
+                let config = WKWebViewConfiguration()
+                config.allowsInlineMediaPlayback = true
+                config.mediaTypesRequiringUserActionForPlayback = []
+                config.defaultWebpagePreferences.allowsContentJavaScript = true
+                config.applicationNameForUserAgent = "BuongLoiHubApp/4.0 (iOS)"
+                config.userContentController.add(self, name: "haptic")
+
+                let created = WKWebView(frame: container.bounds, configuration: config)
+                created.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                created.allowsBackForwardNavigationGestures = true
+                let dark = UIColor(red: 0.035, green: 0.043, blue: 0.098, alpha: 1.0)
+                created.backgroundColor = dark
+                created.isOpaque = false
+                created.scrollView.backgroundColor = dark
+
+                let refresh = UIRefreshControl()
+                refresh.tintColor = UIColor(red: 0.204, green: 0.827, blue: 0.600, alpha: 1.0)
+                refresh.addTarget(self, action: #selector(handlePullToRefresh(_:)), for: .valueChanged)
+                created.scrollView.refreshControl = refresh
+
+                container.addSubview(created)
+                created.load(URLRequest(url: targetURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 25))
+                webViews[tab] = created
+                wv = created
             }
-        }
-    }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-        var parent: WebViewContainer
-        weak var webView: WKWebView?
-        var progressObservation: NSKeyValueObservation?
-        var lastReloadToken: UUID?
-        var lastNavCommandToken: UUID?
-        var deferredJS: String?
-
-        init(_ parent: WebViewContainer) {
-            self.parent = parent
-            self.lastReloadToken = parent.reloadToken
-            self.lastNavCommandToken = parent.navCommandToken
+            for (t, view) in webViews {
+                view.isHidden = (t != tab)
+            }
+            container.bringSubviewToFront(wv)
         }
 
-        deinit {
-            progressObservation?.invalidate()
-        }
-
-        @objc func handleRefresh(_ sender: UIRefreshControl) {
-            let impact = UIImpactFeedbackGenerator(style: .light)
-            impact.impactOccurred()
-            webView?.reload()
+        @objc private func handlePullToRefresh(_ sender: UIRefreshControl) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            if let scrollView = sender.superview as? UIScrollView,
+               let wv = scrollView.superview as? WKWebView {
+                wv.reload()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                sender.endRefreshing()
+            }
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "haptic" {
-                let styleStr = (message.body as? String) ?? "light"
-                let style: UIImpactFeedbackGenerator.FeedbackStyle
-                switch styleStr {
-                case "heavy": style = .heavy
-                case "medium": style = .medium
-                default: style = .light
-                }
-                let impact = UIImpactFeedbackGenerator(style: style)
-                impact.impactOccurred()
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            DispatchQueue.main.async {
-                self.parent.isLoading = true
-                self.parent.loadFailed = false
-            }
-        }
-
-        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            DispatchQueue.main.async {
-                self.parent.isLoading = false
-                self.parent.loadFailed = false
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            DispatchQueue.main.async {
-                self.parent.isLoading = false
-                self.parent.loadFailed = false
-                webView.scrollView.refreshControl?.endRefreshing()
-                if let js = self.deferredJS {
-                    self.deferredJS = nil
-                    webView.evaluateJavaScript(js, completionHandler: nil)
-                }
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            let nsError = error as NSError
-            if nsError.code == NSURLErrorCancelled { return }
-            DispatchQueue.main.async {
-                self.parent.isLoading = false
-                webView.scrollView.refreshControl?.endRefreshing()
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            let nsError = error as NSError
-            if nsError.code == NSURLErrorCancelled { return }
-            DispatchQueue.main.async {
-                self.parent.isLoading = false
-                self.parent.loadFailed = true
-                webView.scrollView.refreshControl?.endRefreshing()
-            }
-        }
-
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            webView.reload()
-        }
-
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            guard let targetURL = navigationAction.request.url else { return nil }
-            let host = targetURL.host?.lowercased() ?? ""
-
-            if host.contains("buongloi.live") || host.contains("buongloi.me") || host.contains("buongloi.dev") {
-                let impact = UIImpactFeedbackGenerator(style: .light)
-                impact.impactOccurred()
-                DispatchQueue.main.async {
-                    if host.contains("report.buongloi") { self.parent.selectedTab = .report }
-                    else if host.contains("bitcoin.buongloi") { self.parent.selectedTab = .crypto }
-                    else if host.contains("music.buongloi") { self.parent.selectedTab = .music }
-                }
-                webView.load(navigationAction.request)
-            } else {
-                UIApplication.shared.open(targetURL, options: [:], completionHandler: nil)
-            }
-            return nil
         }
     }
+}
+
+// MARK: - In-App Sheet Browser for Individual Apps / Articles
+struct InAppBrowserSheet: View {
+    let target: SheetWebTarget
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            SingleSheetWebView(url: target.url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(target.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Đóng") {
+                            dismiss()
+                        }
+                        .font(.system(size: 15, weight: .bold))
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Link(destination: target.url) {
+                            Image(systemName: "safari")
+                        }
+                    }
+                }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct SingleSheetWebView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.allowsBackForwardNavigationGestures = true
+        wv.load(URLRequest(url: url))
+        return wv
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
