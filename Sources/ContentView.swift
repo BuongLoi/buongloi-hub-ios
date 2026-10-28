@@ -218,6 +218,7 @@ final class LiveHubViewModel: ObservableObject {
     @Published var authToken: String = UserDefaults.standard.string(forKey: "hub_admin_token") ?? ""
     @Published var adminUsername: String = UserDefaults.standard.string(forKey: "hub_admin_user") ?? "admin"
     @Published var isAuthenticated: Bool = false
+    @Published var isCheckingAuth: Bool = true
     @Published var showAuthSheet: Bool = false
     @Published var selectedOpsService: SystemdServiceItem?
     var pendingOpsService: SystemdServiceItem?
@@ -226,6 +227,8 @@ final class LiveHubViewModel: ObservableObject {
     private var endObserver: NSObjectProtocol?
 
     func verifyAdminToken() async {
+        isCheckingAuth = true
+        defer { isCheckingAuth = false }
         guard !authToken.isEmpty, let url = URL(string: "https://hub.buongloi.me/api/auth/verify") else {
             isAuthenticated = false
             return
@@ -316,6 +319,8 @@ final class LiveHubViewModel: ObservableObject {
     }
 
     func logoutAdmin() {
+        player?.pause()
+        isPlayingAudio = false
         authToken = ""
         isAuthenticated = false
         UserDefaults.standard.removeObject(forKey: "hub_admin_token")
@@ -377,6 +382,7 @@ final class LiveHubViewModel: ObservableObject {
     }
 
     func fetchLiveHub(force: Bool = false) async {
+        guard isAuthenticated, !authToken.isEmpty else { return }
         isSyncing = true
         defer { isSyncing = false }
 
@@ -384,13 +390,20 @@ final class LiveHubViewModel: ObservableObject {
         guard let url = URL(string: urlStr) else { return }
 
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 18)
-        req.setValue("BuongLoiHubNative/4.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        req.setValue("BuongLoiHubNative/4.2 (iOS)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
         do {
             let (raw, resp) = try await URLSession.shared.data(for: req)
-            if let http = resp as? HTTPURLResponse, http.statusCode == 200 {
-                let decoded = try JSONDecoder().decode(LiveHubResponse.self, from: raw)
-                self.data = decoded
+            if let http = resp as? HTTPURLResponse {
+                if http.statusCode == 401 {
+                    logoutAdmin()
+                    return
+                }
+                if http.statusCode == 200 {
+                    let decoded = try JSONDecoder().decode(LiveHubResponse.self, from: raw)
+                    self.data = decoded
+                }
             }
         } catch {
             // Keep existing cached data if offline
@@ -437,8 +450,8 @@ final class LiveHubViewModel: ObservableObject {
         let safeIdx = list.isEmpty ? 0 : ((index % list.count) + list.count) % list.count
         currentTrackIndex = safeIdx
         let streamIdx = list.isEmpty ? 0 : list[safeIdx].idx
-
-        guard let streamURL = URL(string: "https://hub.buongloi.me/api/music/stream?idx=\(streamIdx)") else { return }
+        let encodedTok = authToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        guard let streamURL = URL(string: "https://hub.buongloi.me/api/music/stream?idx=\(streamIdx)&token=\(encodedTok)") else { return }
 
         if let oldObs = endObserver {
             NotificationCenter.default.removeObserver(oldObs)
@@ -490,63 +503,68 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             bgDark.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Viewport Area: Either Pure Native SwiftUI Cockpit OR Persistent WebView Deck
-                ZStack {
-                    // Persistent WebViews for Tabs 2..5 (kept alive in memory so switching is instant)
-                    PersistentWebDeck(selectedTab: selectedTab)
-                        .opacity(selectedTab == .cockpit ? 0 : 1)
-                        .allowsHitTesting(selectedTab != .cockpit)
+            if vm.isAuthenticated {
+                VStack(spacing: 0) {
+                    // Viewport Area: Either Pure Native SwiftUI Cockpit OR Persistent WebView Deck
+                    ZStack {
+                        // Persistent WebViews for Tabs 2..5 (kept alive in memory so switching is instant)
+                        PersistentWebDeck(selectedTab: selectedTab, authToken: vm.authToken)
+                            .opacity(selectedTab == .cockpit ? 0 : 1)
+                            .allowsHitTesting(selectedTab != .cockpit)
 
-                    // Tab 1: Pure Native SwiftUI 120Hz Executive Cockpit
-                    if selectedTab == .cockpit {
-                        NativeCockpitScrollView(
-                            vm: vm,
-                            selectedTab: $selectedTab,
-                            activeSheet: $activeSheet
-                        )
-                        .transition(.opacity)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                // Native Glassmorphic 5-Tab Bar
-                HStack(spacing: 0) {
-                    ForEach(SuperAppTab.allCases, id: \.self) { tab in
-                        Button {
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                selectedTab = tab
-                            }
-                        } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: tab.icon)
-                                    .font(.system(size: 18, weight: selectedTab == tab ? .bold : .medium))
-                                    .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.55))
-                                    .scaleEffect(selectedTab == tab ? 1.08 : 1.0)
-
-                                Text(tab.rawValue)
-                                    .font(.system(size: 10.5, weight: selectedTab == tab ? .bold : .medium, design: .rounded))
-                                    .foregroundColor(selectedTab == tab ? .white : Color(white: 0.55))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 9)
-                            .padding(.bottom, 6)
+                        // Tab 1: Pure Native SwiftUI 120Hz Executive Cockpit
+                        if selectedTab == .cockpit {
+                            NativeCockpitScrollView(
+                                vm: vm,
+                                selectedTab: $selectedTab,
+                                activeSheet: $activeSheet
+                            )
+                            .transition(.opacity)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    // Native Glassmorphic 5-Tab Bar
+                    HStack(spacing: 0) {
+                        ForEach(SuperAppTab.allCases, id: \.self) { tab in
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    selectedTab = tab
+                                }
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: tab.icon)
+                                        .font(.system(size: 18, weight: selectedTab == tab ? .bold : .medium))
+                                        .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.55))
+                                        .scaleEffect(selectedTab == tab ? 1.08 : 1.0)
+
+                                    Text(tab.rawValue)
+                                        .font(.system(size: 10.5, weight: selectedTab == tab ? .bold : .medium, design: .rounded))
+                                        .foregroundColor(selectedTab == tab ? .white : Color(white: 0.55))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 9)
+                                .padding(.bottom, 6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .background(
+                        Color(red: 0.047, green: 0.059, blue: 0.125)
+                            .overlay(
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.09))
+                                    .frame(height: 0.6),
+                                alignment: .top
+                            )
+                            .ignoresSafeArea(edges: .bottom)
+                    )
                 }
-                .padding(.horizontal, 6)
-                .background(
-                    Color(red: 0.047, green: 0.059, blue: 0.125)
-                        .overlay(
-                            Rectangle()
-                                .fill(Color.white.opacity(0.09))
-                                .frame(height: 0.6),
-                            alignment: .top
-                        )
-                        .ignoresSafeArea(edges: .bottom)
-                )
+            } else {
+                FullScreenLoginGateView(vm: vm)
+                    .transition(.opacity)
             }
         }
         .sheet(item: $activeSheet) { item in
@@ -563,7 +581,9 @@ struct ContentView: View {
             try? AVAudioSession.sharedInstance().setActive(true)
             Task {
                 await vm.verifyAdminToken()
-                await vm.fetchLiveHub(force: false)
+                if vm.isAuthenticated {
+                    await vm.fetchLiveHub(force: false)
+                }
             }
         }
     }
@@ -639,7 +659,7 @@ struct NativeCockpitScrollView: View {
                         .font(.system(size: 18, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
 
-                    Text("PRO v4.1")
+                    Text("PRO v4.2")
                         .font(.system(size: 9.5, weight: .heavy, design: .monospaced))
                         .foregroundColor(emerald)
                         .padding(.horizontal, 6)
@@ -1413,6 +1433,7 @@ struct SparklineShapeView: View {
 // MARK: - Persistent Multi-WebView Deck for Tabs 2..5 (Zero Reload Switching)
 struct PersistentWebDeck: UIViewRepresentable {
     let selectedTab: SuperAppTab
+    let authToken: String
 
     func makeCoordinator() -> DeckCoordinator {
         DeckCoordinator()
@@ -1426,15 +1447,20 @@ struct PersistentWebDeck: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.showTab(selectedTab)
+        context.coordinator.showTab(selectedTab, authToken: authToken)
     }
 
     final class DeckCoordinator: NSObject, WKScriptMessageHandler {
         weak var containerView: UIView?
         private var webViews: [SuperAppTab: WKWebView] = [:]
 
-        func showTab(_ tab: SuperAppTab) {
-            guard let container = containerView, let targetURL = tab.webURL else { return }
+        func showTab(_ tab: SuperAppTab, authToken: String) {
+            guard let container = containerView, var targetURL = tab.webURL else { return }
+            if tab == .farm, !authToken.isEmpty,
+               let encoded = authToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let authedURL = URL(string: "https://hub.buongloi.me/?mode=2d&embed=ios&token=\(encoded)") {
+                targetURL = authedURL
+            }
 
             let wv: WKWebView
             if let existing = webViews[tab] {
@@ -1856,3 +1882,185 @@ struct DevOpsInspectorSheetView: View {
         .preferredColorScheme(.dark)
     }
 }
+
+// MARK: - Full-Screen Mandatory Login Gate View (v4.2)
+struct FullScreenLoginGateView: View {
+    @ObservedObject var vm: LiveHubViewModel
+    @State private var usernameInput: String = "admin"
+    @State private var passwordInput: String = ""
+    @State private var feedbackText: String = ""
+    @State private var isError: Bool = false
+    @State private var isBusy: Bool = false
+
+    private let emerald = Color(red: 0.204, green: 0.827, blue: 0.600)
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.025, green: 0.035, blue: 0.085), Color(red: 0.055, green: 0.075, blue: 0.165)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 22) {
+                    Spacer(minLength: 36)
+
+                    // Logo Orb
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [emerald.opacity(0.28), Color.blue.opacity(0.28)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 72, height: 72)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .stroke(emerald.opacity(0.5), lineWidth: 1.2)
+                            )
+
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(emerald)
+                    }
+
+                    Text("SECURITY GATEWAY · PRO v4.2")
+                        .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                        .foregroundColor(emerald)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(emerald.opacity(0.15))
+                        .clipShape(Capsule())
+
+                    VStack(spacing: 6) {
+                        Text("Buông Lơi Hub")
+                            .font(.system(size: 26, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+
+                        Text("Cổng Chỉ Huy Hệ Sinh Thái Số & DevOps 20 Daemons.\nVui lòng đăng nhập để mở khóa truy cập hệ thống.")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(white: 0.68))
+                            .multilineTextAlignment(.center)
+                    }
+
+                    if vm.isCheckingAuth {
+                        HStack(spacing: 10) {
+                            ProgressView().tint(emerald)
+                            Text("Đang kiểm tra phiên bảo mật...")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(Color(white: 0.75))
+                        }
+                        .padding(.vertical, 20)
+                    } else {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Tài khoản truy cập")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(Color(white: 0.78))
+
+                                TextField("admin", text: $usernameInput)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .padding(13)
+                                    .background(Color.black.opacity(0.38))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                                    )
+                                    .foregroundColor(.white)
+                            }
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Mật khẩu bảo mật")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(Color(white: 0.78))
+
+                                SecureField("Nhập mật khẩu để truy cập Hub...", text: $passwordInput)
+                                    .padding(13)
+                                    .background(Color.black.opacity(0.38))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                                    )
+                                    .foregroundColor(.white)
+                            }
+
+                            if !feedbackText.isEmpty {
+                                Text(feedbackText)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundColor(isError ? .red : emerald)
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background((isError ? Color.red : emerald).opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+
+                            Button {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                Task {
+                                    isBusy = true
+                                    feedbackText = ""
+                                    let (ok, msg) = await vm.loginAdmin(username: usernameInput, password: passwordInput)
+                                    isBusy = false
+                                    isError = !ok
+                                    if ok {
+                                        await vm.fetchLiveHub(force: true)
+                                    } else {
+                                        feedbackText = "❌ \(msg)"
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if isBusy {
+                                        ProgressView().tint(.white)
+                                    } else {
+                                        Image(systemName: "key.fill")
+                                    }
+                                    Text(isBusy ? "Đang xác thực..." : "Xác Thực & Truy Cập Hệ Thống")
+                                        .font(.system(size: 15, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color(red: 0.063, green: 0.725, blue: 0.506), Color.blue],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
+                            .disabled(isBusy)
+                        }
+                        .padding(22)
+                        .background(Color(red: 0.075, green: 0.095, blue: 0.195).opacity(0.92))
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        )
+                    }
+
+                    Text("🛡️ Bảo vệ bởi PBKDF2-SHA256 & HMAC Session · VPS 192.210.254.38")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color(white: 0.48))
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 8)
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 32)
+            }
+        }
+        .onAppear {
+            usernameInput = vm.adminUsername
+        }
+    }
+}
+

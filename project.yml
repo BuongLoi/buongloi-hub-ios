@@ -28,8 +28,8 @@ targets:
       properties:
         CFBundleDisplayName: "Buông Lơi Hub"
         CFBundleIdentifier: "me.buongloi.hub"
-        CFBundleShortVersionString: "4.1.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "4.2.0"
+        CFBundleVersion: "6"
         UIBackgroundModes:
           - audio
         UILaunchScreen: {}
