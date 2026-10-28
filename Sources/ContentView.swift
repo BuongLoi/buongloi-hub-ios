@@ -65,6 +65,35 @@ struct SystemdServiceItem: Codable, Identifiable {
     let unit: String
     let label: String
     let active: Bool
+    let manager: String?
+    let group: String?
+}
+
+struct AuthResponse: Codable {
+    let ok: Bool?
+    let authenticated: Bool?
+    let token: String?
+    let username: String?
+    let message: String?
+    let error: String?
+}
+
+struct OpsActionResponse: Codable {
+    let ok: Bool?
+    let unit: String?
+    let label: String?
+    let active: Bool?
+    let message: String?
+    let error: String?
+}
+
+struct OpsLogsResponse: Codable {
+    let ok: Bool?
+    let unit: String?
+    let label: String?
+    let manager: String?
+    let logs: String?
+    let error: String?
 }
 
 struct CryptoTelemetry: Codable {
@@ -185,8 +214,167 @@ final class LiveHubViewModel: ObservableObject {
     @Published var isPlayingAudio: Bool = false
     @Published var currentTrackIndex: Int = 0
 
+    // Admin Auth & DevOps State
+    @Published var authToken: String = UserDefaults.standard.string(forKey: "hub_admin_token") ?? ""
+    @Published var adminUsername: String = UserDefaults.standard.string(forKey: "hub_admin_user") ?? "admin"
+    @Published var isAuthenticated: Bool = false
+    @Published var showAuthSheet: Bool = false
+    @Published var selectedOpsService: SystemdServiceItem?
+    var pendingOpsService: SystemdServiceItem?
+
     private var player: AVPlayer?
     private var endObserver: NSObjectProtocol?
+
+    func verifyAdminToken() async {
+        guard !authToken.isEmpty, let url = URL(string: "https://hub.buongloi.me/api/auth/verify") else {
+            isAuthenticated = false
+            return
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        req.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        do {
+            let (raw, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 200,
+               let decoded = try? JSONDecoder().decode(AuthResponse.self, from: raw),
+               decoded.authenticated == true {
+                isAuthenticated = true
+                if let u = decoded.username { adminUsername = u }
+                return
+            }
+        } catch {}
+        isAuthenticated = false
+    }
+
+    func selectServiceForOps(_ svc: SystemdServiceItem) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if isAuthenticated {
+            selectedOpsService = svc
+        } else {
+            pendingOpsService = svc
+            showAuthSheet = true
+        }
+    }
+
+    func loginAdmin(username: String, password: String) async -> (Bool, String) {
+        guard let url = URL(string: "https://hub.buongloi.me/api/auth/login") else {
+            return (false, "URL không hợp lệ")
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["username": username, "password": password]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (raw, _) = try await URLSession.shared.data(for: req)
+            let decoded = try JSONDecoder().decode(AuthResponse.self, from: raw)
+            if decoded.ok == true, let tok = decoded.token {
+                authToken = tok
+                adminUsername = decoded.username ?? username
+                isAuthenticated = true
+                UserDefaults.standard.set(tok, forKey: "hub_admin_token")
+                UserDefaults.standard.set(adminUsername, forKey: "hub_admin_user")
+                return (true, "Đăng nhập thành công!")
+            } else {
+                return (false, decoded.error ?? "Sai tài khoản hoặc mật khẩu!")
+            }
+        } catch {
+            return (false, "Lỗi kết nối: \(error.localizedDescription)")
+        }
+    }
+
+    func changeAdminPassword(currentPassword: String, newUsername: String, newPassword: String) async -> (Bool, String) {
+        guard let url = URL(string: "https://hub.buongloi.me/api/auth/change-password") else {
+            return (false, "URL không hợp lệ")
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        let body: [String: String] = [
+            "current_password": currentPassword,
+            "new_username": newUsername,
+            "new_password": newPassword
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (raw, _) = try await URLSession.shared.data(for: req)
+            let decoded = try JSONDecoder().decode(AuthResponse.self, from: raw)
+            if decoded.ok == true, let tok = decoded.token {
+                authToken = tok
+                adminUsername = decoded.username ?? newUsername
+                UserDefaults.standard.set(tok, forKey: "hub_admin_token")
+                UserDefaults.standard.set(adminUsername, forKey: "hub_admin_user")
+                return (true, decoded.message ?? "Đã đổi mật khẩu thành công!")
+            } else {
+                return (false, decoded.error ?? "Đổi mật khẩu thất bại!")
+            }
+        } catch {
+            return (false, "Lỗi kết nối: \(error.localizedDescription)")
+        }
+    }
+
+    func logoutAdmin() {
+        authToken = ""
+        isAuthenticated = false
+        UserDefaults.standard.removeObject(forKey: "hub_admin_token")
+    }
+
+    func restartService(unit: String) async -> (Bool, String) {
+        guard let url = URL(string: "https://hub.buongloi.me/api/ops/restart") else {
+            return (false, "URL không hợp lệ")
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["unit": unit])
+
+        do {
+            let (raw, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
+                logoutAdmin()
+                return (false, "Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.")
+            }
+            let decoded = try JSONDecoder().decode(OpsActionResponse.self, from: raw)
+            if decoded.ok == true {
+                await fetchLiveHub(force: true)
+                return (true, decoded.message ?? "Đã khởi động lại thành công!")
+            } else {
+                return (false, decoded.error ?? "Restart thất bại!")
+            }
+        } catch {
+            return (false, "Lỗi kết nối: \(error.localizedDescription)")
+        }
+    }
+
+    func fetchServiceLogs(unit: String) async -> String {
+        if unit == "all-gateways" {
+            return "Chế độ Khởi động lại toàn bộ Gateway:\n• Nginx Reverse Proxy (nginx.service)\n• Cloudflare Tunnel (cloudflared.service)\n• Hermes Agent Gateway (hermes-gateway.service)\n\nNhấn nút '🔄 Khởi Động Lại Dịch Vụ (Restart)' phía trên để thực thi ngay."
+        }
+        guard let encoded = unit.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://hub.buongloi.me/api/ops/logs?unit=\(encoded)&lines=65") else {
+            return "URL không hợp lệ."
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        req.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        do {
+            let (raw, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
+                logoutAdmin()
+                return "⚠️ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."
+            }
+            let decoded = try JSONDecoder().decode(OpsLogsResponse.self, from: raw)
+            if decoded.ok == true {
+                return decoded.logs ?? "Không có dữ liệu log."
+            } else {
+                return "⚠️ \(decoded.error ?? "Không thể tải log.")"
+            }
+        } catch {
+            return "⚠️ Lỗi kết nối: \(error.localizedDescription)"
+        }
+    }
 
     func fetchLiveHub(force: Bool = false) async {
         isSyncing = true
@@ -364,10 +552,17 @@ struct ContentView: View {
         .sheet(item: $activeSheet) { item in
             InAppBrowserSheet(target: item)
         }
+        .sheet(isPresented: $vm.showAuthSheet) {
+            AdminAuthSheetView(vm: vm)
+        }
+        .sheet(item: $vm.selectedOpsService) { svc in
+            DevOpsInspectorSheetView(vm: vm, service: svc)
+        }
         .onAppear {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try? AVAudioSession.sharedInstance().setActive(true)
             Task {
+                await vm.verifyAdminToken()
                 await vm.fetchLiveHub(force: false)
             }
         }
@@ -441,11 +636,11 @@ struct NativeCockpitScrollView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text("Buông Lơi Hub")
-                        .font(.system(size: 19, weight: .heavy, design: .rounded))
+                        .font(.system(size: 18, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
 
-                    Text("PRO v4.0")
-                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    Text("PRO v4.1")
+                        .font(.system(size: 9.5, weight: .heavy, design: .monospaced))
                         .foregroundColor(emerald)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -453,12 +648,32 @@ struct NativeCockpitScrollView: View {
                         .clipShape(Capsule())
                 }
 
-                Text("Native iOS Executive Command Center")
-                    .font(.system(size: 11.5, weight: .medium))
+                Text("Executive DevOps Command Center")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Color(white: 0.62))
             }
 
             Spacer()
+
+            // Admin Auth Button
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                vm.pendingOpsService = nil
+                vm.showAuthSheet = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: vm.isAuthenticated ? "lock.open.fill" : "lock.fill")
+                        .font(.system(size: 10.5, weight: .bold))
+                    Text(vm.isAuthenticated ? "Admin" : "Ops")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                }
+                .foregroundColor(vm.isAuthenticated ? emerald : amber)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background((vm.isAuthenticated ? emerald : amber).opacity(0.15))
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke((vm.isAuthenticated ? emerald : amber).opacity(0.35), lineWidth: 1))
+            }
 
             Button {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -631,27 +846,95 @@ struct NativeCockpitScrollView: View {
                 vpsMeter(label: "SWAP", val: String(format: "%.0fM", vps?.swap_used_mb ?? 980), pct: (vps?.swap_pct ?? 48) / 100.0)
             }
 
-            if !services.isEmpty {
-                Text("TRẠNG THÁI 14 SYSTEMD DAEMONS TRÊN VPS")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(white: 0.58))
+            // Quick Gateway Recovery Row
+            VStack(alignment: .leading, spacing: 6) {
+                Text("⚡ CỨU HỘ GATEWAY & ĐIỀU KHIỂN DAEMONS (CHẠM ĐỂ RESTART / LOG)")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(white: 0.6))
 
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Button {
+                            vm.selectServiceForOps(SystemdServiceItem(unit: "all-gateways", label: "Toàn bộ Gateway", active: true, manager: "gateway-suite", group: "gateway"))
+                        } label: {
+                            Text("🚀 Restart All Gateways")
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(amber)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(amber.opacity(0.16))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(amber.opacity(0.4), lineWidth: 1))
+                        }
+
+                        Button {
+                            vm.selectServiceForOps(SystemdServiceItem(unit: "hermes-gateway", label: "Hermes Gateway", active: true, manager: "systemd-user", group: "gateway"))
+                        } label: {
+                            Text("🤖 Hermes Gateway")
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.07))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+
+                        Button {
+                            vm.selectServiceForOps(SystemdServiceItem(unit: "cloudflared", label: "CF Tunnel", active: true, manager: "systemd", group: "gateway"))
+                        } label: {
+                            Text("🌐 CF Tunnel")
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.07))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+
+                        Button {
+                            vm.selectServiceForOps(SystemdServiceItem(unit: "nginx", label: "Nginx Proxy", active: true, manager: "systemd", group: "gateway"))
+                        } label: {
+                            Text("⚡ Nginx")
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.07))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                    }
+                }
+            }
+
+            if !services.isEmpty {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                     ForEach(services) { svc in
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(svc.active ? emerald : Color.red)
-                                .frame(width: 6, height: 6)
-                            Text(svc.label)
-                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
+                        Button {
+                            vm.selectServiceForOps(svc)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(svc.active ? emerald : Color.red)
+                                    .frame(width: 6, height: 6)
+                                Text(svc.label)
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundColor(Color(white: 0.5))
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                            )
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 5)
-                        .background(Color.white.opacity(0.04))
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1250,4 +1533,326 @@ struct SingleSheetWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+// MARK: - Native Admin Authentication & Password Management Sheet
+struct AdminAuthSheetView: View {
+    @ObservedObject var vm: LiveHubViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var usernameInput: String = "admin"
+    @State private var passwordInput: String = ""
+    @State private var currentPassInput: String = ""
+    @State private var newUserInput: String = "admin"
+    @State private var newPassInput: String = ""
+    @State private var feedbackText: String = ""
+    @State private var isError: Bool = false
+    @State private var isBusy: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !vm.isAuthenticated {
+                        Text("Xác thực quyền Admin để mở khóa tính năng Khởi động lại (Restart) ứng dụng bị treo, Restart Gateway và xem Live Journalctl/PM2 Logs.")
+                            .font(.system(size: 13.5))
+                            .foregroundColor(Color(white: 0.7))
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Tài khoản Admin")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(Color(white: 0.78))
+                            TextField("admin", text: $usernameInput)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .padding(12)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .foregroundColor(.white)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Mật khẩu Admin")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(Color(white: 0.78))
+                            SecureField("Nhập mật khẩu quản trị...", text: $passwordInput)
+                                .padding(12)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .foregroundColor(.white)
+                        }
+
+                        if !feedbackText.isEmpty {
+                            Text(feedbackText)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(isError ? Color.red : Color.green)
+                        }
+
+                        Button {
+                            Task {
+                                isBusy = true
+                                let (ok, msg) = await vm.loginAdmin(username: usernameInput, password: passwordInput)
+                                isBusy = false
+                                isError = !ok
+                                feedbackText = msg
+                                if ok {
+                                    let target = vm.pendingOpsService
+                                    vm.pendingOpsService = nil
+                                    dismiss()
+                                    if let svc = target {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                            vm.selectedOpsService = svc
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                if isBusy { ProgressView().tint(.white) }
+                                Text("🔓 Đăng Nhập & Mở Khóa Ops")
+                                    .font(.system(size: 15, weight: .bold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(Color(red: 0.063, green: 0.725, blue: 0.506))
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .disabled(isBusy)
+                    } else {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Đang đăng nhập quyền Quản trị")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(white: 0.65))
+                                Text("👤 \(vm.adminUsername)")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.green)
+                            }
+                            Spacer()
+                            Button("Đăng xuất") {
+                                vm.logoutAdmin()
+                                dismiss()
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.red)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.red.opacity(0.16))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .padding(14)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                        Divider().background(Color.white.opacity(0.15))
+
+                        Text("🔑 Đổi mật khẩu Admin")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+
+                        SecureField("Mật khẩu hiện tại", text: $currentPassInput)
+                            .padding(12)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .foregroundColor(.white)
+
+                        TextField("Tên tài khoản mới (tùy chọn)", text: $newUserInput)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(12)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .foregroundColor(.white)
+
+                        SecureField("Mật khẩu mới (tối thiểu 4 ký tự)", text: $newPassInput)
+                            .padding(12)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .foregroundColor(.white)
+
+                        if !feedbackText.isEmpty {
+                            Text(feedbackText)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(isError ? Color.red : Color.green)
+                        }
+
+                        Button {
+                            Task {
+                                isBusy = true
+                                let (ok, msg) = await vm.changeAdminPassword(
+                                    currentPassword: currentPassInput,
+                                    newUsername: newUserInput,
+                                    newPassword: newPassInput
+                                )
+                                isBusy = false
+                                isError = !ok
+                                feedbackText = msg
+                                if ok {
+                                    currentPassInput = ""
+                                    newPassInput = ""
+                                }
+                            }
+                        } label: {
+                            Text("💾 Lưu mật khẩu mới")
+                                .font(.system(size: 15, weight: .bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .disabled(isBusy)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color(red: 0.047, green: 0.059, blue: 0.125).ignoresSafeArea())
+            .navigationTitle("🔐 Bảo Mật DevOps")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Đóng") { dismiss() }
+                }
+            }
+            .onAppear {
+                usernameInput = vm.adminUsername
+                newUserInput = vm.adminUsername
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Native DevOps Service Restart & Live Logs Inspector Sheet
+struct DevOpsInspectorSheetView: View {
+    @ObservedObject var vm: LiveHubViewModel
+    let service: SystemdServiceItem
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var logsText: String = "⏳ Đang tải log thời gian thực từ VPS 192.210.254.38..."
+    @State private var statusBanner: String = ""
+    @State private var isError: Bool = false
+    @State private var isRestarting: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text((service.manager ?? "systemd").uppercased())
+                        .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.cyan.opacity(0.16))
+                        .clipShape(Capsule())
+
+                    Text(service.active ? "● ACTIVE (ONLINE)" : "● INACTIVE / DOWN")
+                        .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                        .foregroundColor(service.active ? .green : .red)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((service.active ? Color.green : Color.red).opacity(0.16))
+                        .clipShape(Capsule())
+
+                    Spacer()
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                        Task {
+                            isRestarting = true
+                            statusBanner = "⏳ Đang gửi lệnh Restart \(service.label)..."
+                            isError = false
+                            let (ok, msg) = await vm.restartService(unit: service.unit)
+                            isRestarting = false
+                            isError = !ok
+                            statusBanner = ok ? "✅ \(msg)" : "❌ \(msg)"
+                            if ok && service.unit != "all-gateways" {
+                                logsText = await vm.fetchServiceLogs(unit: service.unit)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if isRestarting {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "arrow.clockwise.circle.fill")
+                            }
+                            Text(isRestarting ? "Đang Restart..." : "Khởi Động Lại (Restart)")
+                                .font(.system(size: 14, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.orange, Color.red],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .disabled(isRestarting)
+
+                    Button {
+                        Task {
+                            logsText = "⏳ Đang làm mới log..."
+                            logsText = await vm.fetchServiceLogs(unit: service.unit)
+                        }
+                    } label: {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+
+                if !statusBanner.isEmpty {
+                    Text(statusBanner)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(isError ? .red : .green)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background((isError ? Color.red : Color.green).opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+
+                Text("TERMINAL LIVE LOGS (\(service.unit))")
+                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(white: 0.6))
+
+                ScrollView {
+                    Text(logsText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Color(red: 0.65, green: 0.95, blue: 0.81))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .background(Color.black.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+            }
+            .padding(16)
+            .background(Color(red: 0.047, green: 0.059, blue: 0.125).ignoresSafeArea())
+            .navigationTitle("\(service.label)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Đóng") { dismiss() }
+                }
+            }
+            .task {
+                logsText = await vm.fetchServiceLogs(unit: service.unit)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
 }
