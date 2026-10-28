@@ -505,14 +505,13 @@ struct ContentView: View {
 
             if vm.isAuthenticated {
                 VStack(spacing: 0) {
-                    // Viewport Area: Either Pure Native SwiftUI Cockpit OR Persistent WebView Deck
+                    // Viewport Area: Either Pure Native SwiftUI Cockpit OR Nông Trại 2D WebView
                     ZStack {
-                        // Persistent WebViews for Tabs 2..5 (kept alive in memory so switching is instant)
-                        PersistentWebDeck(selectedTab: selectedTab, authToken: vm.authToken)
-                            .opacity(selectedTab == .cockpit ? 0 : 1)
-                            .allowsHitTesting(selectedTab != .cockpit)
+                        if selectedTab == .farm {
+                            PersistentWebDeck(selectedTab: .farm, authToken: vm.authToken)
+                                .transition(.opacity)
+                        }
 
-                        // Tab 1: Pure Native SwiftUI 120Hz Executive Cockpit
                         if selectedTab == .cockpit {
                             NativeCockpitScrollView(
                                 vm: vm,
@@ -523,44 +522,6 @@ struct ContentView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    // Native Glassmorphic 5-Tab Bar
-                    HStack(spacing: 0) {
-                        ForEach(SuperAppTab.allCases, id: \.self) { tab in
-                            Button {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                withAnimation(.easeInOut(duration: 0.18)) {
-                                    selectedTab = tab
-                                }
-                            } label: {
-                                VStack(spacing: 4) {
-                                    Image(systemName: tab.icon)
-                                        .font(.system(size: 18, weight: selectedTab == tab ? .bold : .medium))
-                                        .foregroundColor(selectedTab == tab ? emeraldAccent : Color(white: 0.55))
-                                        .scaleEffect(selectedTab == tab ? 1.08 : 1.0)
-
-                                    Text(tab.rawValue)
-                                        .font(.system(size: 10.5, weight: selectedTab == tab ? .bold : .medium, design: .rounded))
-                                        .foregroundColor(selectedTab == tab ? .white : Color(white: 0.55))
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 9)
-                                .padding(.bottom, 6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 6)
-                    .background(
-                        Color(red: 0.047, green: 0.059, blue: 0.125)
-                            .overlay(
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.09))
-                                    .frame(height: 0.6),
-                                alignment: .top
-                            )
-                            .ignoresSafeArea(edges: .bottom)
-                    )
                 }
             } else {
                 FullScreenLoginGateView(vm: vm)
@@ -610,19 +571,10 @@ struct NativeCockpitScrollView: View {
                 // 1. Top Native Executive Header
                 headerSection
 
-                // 2. Native Crypto Terminal Card + Sparkline
-                cryptoCard
-
-                // 3. Native RackNerd VPS + 14-Service Systemd Matrix
+                // 2. Native RackNerd VPS + 20-Service Systemd/PM2 Matrix (Tập trung hiển thị bảng VPS)
                 vpsMatrixCard
 
-                // 4. Native Sài Gòn Weather + Native AVPlayer GDrive Deck
-                weatherAndMusicCard
-
-                // 5. Native AI News & Giveaways Feed
-                intelligenceFeedCard
-
-                // 6. Native 14-App Vector Launchpad Grid
+                // 3. Native 14-App Vector Launchpad Grid
                 launchpadGridSection
             }
             .padding(.horizontal, 16)
@@ -1289,7 +1241,9 @@ struct NativeCockpitScrollView: View {
                     .foregroundColor(Color(white: 0.75))
                 Spacer()
                 Button {
-                    selectedTab = .farm
+                    if let u = URL(string: "https://hub.buongloi.me/?mode=2d") {
+                        activeSheet = SheetWebTarget(title: "Nông Trại Buông Lơi 2D", url: u)
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Text("🌾 Nông Trại 2D")
@@ -1309,13 +1263,7 @@ struct NativeCockpitScrollView: View {
 
                     Button {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        if app.id == "report" {
-                            selectedTab = .report
-                        } else if app.id == "bitcoin" {
-                            selectedTab = .crypto
-                        } else if app.id == "news" {
-                            selectedTab = .news
-                        } else if let u = URL(string: app.urlString) {
+                        if let u = URL(string: app.urlString) {
                             activeSheet = SheetWebTarget(title: app.name, url: u)
                         }
                     } label: {
