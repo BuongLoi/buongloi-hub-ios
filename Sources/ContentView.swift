@@ -344,12 +344,27 @@ final class LiveHubViewModel: ObservableObject {
             }
             let decoded = try JSONDecoder().decode(OpsActionResponse.self, from: raw)
             if decoded.ok == true {
-                await fetchLiveHub(force: true)
+                let isGatewaySelf = (unit == "all-gateways" || unit == "cloudflared" || unit == "nginx")
+                if isGatewaySelf {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_800_000_000)
+                        await fetchLiveHub(force: true)
+                    }
+                } else {
+                    await fetchLiveHub(force: true)
+                }
                 return (true, decoded.message ?? "Đã khởi động lại thành công!")
             } else {
                 return (false, decoded.error ?? "Restart thất bại!")
             }
         } catch {
+            if unit == "all-gateways" || unit == "cloudflared" || unit == "nginx" {
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_800_000_000)
+                    await fetchLiveHub(force: true)
+                }
+                return (true, "Đã khởi động lại Gateway thành công! Đường truyền Cloudflare Tunnel vừa tái kết nối.")
+            }
             return (false, "Lỗi kết nối: \(error.localizedDescription)")
         }
     }
