@@ -45,19 +45,46 @@ struct LiveHubResponse: Codable {
 }
 
 struct VpsTelemetry: Codable {
+    let hostname: String?
+    let ip: String?
+    let os: String?
+    let kernel: String?
+    let cpu_cores: Int?
+    let cpu_model: String?
+    let cpu_load_1m: Double?
+    let cpu_load_5m: Double?
+    let cpu_load_15m: Double?
+    let load_avg: String?
     let cpu_pct: Double?
     let ram_used_gb: Double?
     let ram_total_gb: Double?
+    let ram_avail_gb: Double?
+    let ram_cached_mb: Int?
     let ram_pct: Double?
     let swap_used_mb: Double?
     let swap_total_mb: Double?
     let swap_pct: Double?
-    let disk_used_gb: String?
-    let disk_total_gb: String?
+    let disk_used_gb: Double?
+    let disk_total_gb: Double?
+    let disk_free_gb: Double?
     let disk_pct: Int?
+    let net_rx_gb: Double?
+    let net_tx_gb: Double?
+    let tcp_connections: Int?
+    let process_count: Int?
     let uptime_str: String?
-    let load_avg: String?
+    let active_daemons: Int?
+    let total_daemons: Int?
+    let top_processes: [TopProcessItem]?
     let services: [SystemdServiceItem]?
+}
+
+struct TopProcessItem: Codable, Identifiable {
+    var id: String { "\(pid ?? "0")-\(name ?? "")" }
+    let pid: String?
+    let name: String?
+    let cpu: Double?
+    let mem: Double?
 }
 
 struct SystemdServiceItem: Codable, Identifiable {
@@ -519,25 +546,13 @@ struct ContentView: View {
             bgDark.ignoresSafeArea()
 
             if vm.isAuthenticated {
-                VStack(spacing: 0) {
-                    // Viewport Area: Either Pure Native SwiftUI Cockpit OR Nông Trại 2D WebView
-                    ZStack {
-                        if selectedTab == .farm {
-                            PersistentWebDeck(selectedTab: .farm, authToken: vm.authToken)
-                                .transition(.opacity)
-                        }
-
-                        if selectedTab == .cockpit {
-                            NativeCockpitScrollView(
-                                vm: vm,
-                                selectedTab: $selectedTab,
-                                activeSheet: $activeSheet
-                            )
-                            .transition(.opacity)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                NativeCockpitScrollView(
+                    vm: vm,
+                    selectedTab: $selectedTab,
+                    activeSheet: $activeSheet
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
             } else {
                 FullScreenLoginGateView(vm: vm)
                     .transition(.opacity)
@@ -626,7 +641,7 @@ struct NativeCockpitScrollView: View {
                         .font(.system(size: 18, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
 
-                    Text("PRO v4.2")
+                    Text("PRO v4.4")
                         .font(.system(size: 9.5, weight: .heavy, design: .monospaced))
                         .foregroundColor(emerald)
                         .padding(.horizontal, 6)
@@ -635,7 +650,7 @@ struct NativeCockpitScrollView: View {
                         .clipShape(Capsule())
                 }
 
-                Text("Executive DevOps Command Center")
+                Text("Executive VPS & 20-Daemon Command Center")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Color(white: 0.62))
             }
@@ -803,10 +818,11 @@ struct NativeCockpitScrollView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    // MARK: Panel 2 — RackNerd VPS & 14-Service Systemd Matrix
+    // MARK: Panel 2 — RackNerd VPS & 20-Service Deep Telemetry Matrix
     private var vpsMatrixCard: some View {
         let vps = vm.data?.vps
         let services = vps?.services ?? []
+        let topProcs = vps?.top_processes ?? []
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -814,30 +830,116 @@ struct NativeCockpitScrollView: View {
                     Circle().fill(emerald).frame(width: 8, height: 8)
                     Text("VPS 192.210.254.38 · UBUNTU 24.04")
                         .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(white: 0.65))
+                        .foregroundColor(Color(white: 0.72))
                 }
                 Spacer()
-                Text("Up: \(vps?.uptime_str ?? "9d 7h")")
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(emerald)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(emerald.opacity(0.14))
-                    .clipShape(Capsule())
+                HStack(spacing: 6) {
+                    Text("\(vps?.active_daemons ?? 20)/\(vps?.total_daemons ?? 20) Daemons")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(emerald)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(emerald.opacity(0.14))
+                        .clipShape(Capsule())
+
+                    Text("Up: \(vps?.uptime_str ?? "Online")")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                }
             }
 
-            HStack(spacing: 8) {
-                vpsMeter(label: "CPU", val: String(format: "%.0f%%", vps?.cpu_pct ?? 6), pct: (vps?.cpu_pct ?? 6) / 100.0)
-                vpsMeter(label: "RAM", val: String(format: "%.1fG", vps?.ram_used_gb ?? 2.1), pct: (vps?.ram_pct ?? 55) / 100.0)
-                vpsMeter(label: "SSD", val: "\(vps?.disk_pct ?? 57)%", pct: Double(vps?.disk_pct ?? 57) / 100.0)
-                vpsMeter(label: "SWAP", val: String(format: "%.0fM", vps?.swap_used_mb ?? 980), pct: (vps?.swap_pct ?? 48) / 100.0)
+            // Row 1: 4 Primary Hardware Gauges with Sub-Details
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                vpsMeter(
+                    label: "CPU LOAD",
+                    val: String(format: "%.0f%%", vps?.cpu_pct ?? 4),
+                    sub: "Load: \(vps?.load_avg ?? "0.04 / 0.06 / 0.01")",
+                    pct: (vps?.cpu_pct ?? 4) / 100.0
+                )
+                vpsMeter(
+                    label: "RAM MEMORY",
+                    val: String(format: "%.2f / %.1fG", vps?.ram_used_gb ?? 2.1, vps?.ram_total_gb ?? 3.8),
+                    sub: String(format: "Khả dụng: %.1fG · Cache: %dM", vps?.ram_avail_gb ?? 1.7, vps?.ram_cached_mb ?? 920),
+                    pct: (vps?.ram_pct ?? 55) / 100.0
+                )
+                vpsMeter(
+                    label: "SSD STORAGE",
+                    val: "\(vps?.disk_pct ?? 59)%",
+                    sub: String(format: "Đã dùng: %.1f / %.1fG (Trống %.1fG)", vps?.disk_used_gb ?? 22.9, vps?.disk_total_gb ?? 38.6, vps?.disk_free_gb ?? 15.7),
+                    pct: Double(vps?.disk_pct ?? 59) / 100.0
+                )
+                vpsMeter(
+                    label: "SWAP MEMORY",
+                    val: String(format: "%.0f MB", vps?.swap_used_mb ?? 980),
+                    sub: String(format: "Tổng: %.0f MB (%.0f%%)", vps?.swap_total_mb ?? 2048, vps?.swap_pct ?? 48),
+                    pct: (vps?.swap_pct ?? 48) / 100.0
+                )
             }
 
-            // Quick Gateway Recovery Row
+            // Row 2: 4 Deep Linux System Telemetry Pills
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                vpsSpecPill(
+                    title: "🌐 BĂNG THÔNG MẠNG",
+                    value: String(format: "↓ %.2f GB · ↑ %.2f GB", vps?.net_rx_gb ?? 12.4, vps?.net_tx_gb ?? 52.5)
+                )
+                vpsSpecPill(
+                    title: "🔌 KẾT NỐI TCP ACTIVE",
+                    value: "\(vps?.tcp_connections ?? 78) sockets"
+                )
+                vpsSpecPill(
+                    title: "⚙️ TIẾN TRÌNH ĐANG CHẠY",
+                    value: "\(vps?.process_count ?? 450) tiến trình"
+                )
+                vpsSpecPill(
+                    title: "🐧 LINUX KERNEL & CPU",
+                    value: "Kernel \(vps?.kernel ?? "6.8") · \(vps?.cpu_cores ?? 2) vCPU"
+                )
+            }
+
+            // Row 3: Top Processes Consuming CPU / RAM
+            if !topProcs.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("🔥 TOP TIẾN TRÌNH TIÊU THỤ TÀI NGUYÊN (REAL-TIME)")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(white: 0.62))
+
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                        ForEach(topProcs.prefix(6)) { proc in
+                            HStack(spacing: 4) {
+                                Text(proc.name ?? "proc")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Spacer(minLength: 2)
+                                Text(String(format: "%.1f%%C", proc.cpu ?? 0))
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(sky)
+                                Text(String(format: "%.1f%%M", proc.mem ?? 0))
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Color(red: 0.65, green: 0.55, blue: 0.98))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.28))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Row 4: Quick Gateway Recovery Row
             VStack(alignment: .leading, spacing: 6) {
-                Text("⚡ CỨU HỘ GATEWAY & ĐIỀU KHIỂN DAEMONS (CHẠM ĐỂ RESTART / LOG)")
+                Text("⚡ CỨU HỘ GATEWAY & ĐIỀU KHIỂN 20 DAEMONS (CHẠM ĐỂ RESTART / LOG)")
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(white: 0.6))
+                    .foregroundColor(Color(white: 0.62))
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -894,31 +996,31 @@ struct NativeCockpitScrollView: View {
             }
 
             if !services.isEmpty {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                     ForEach(services) { svc in
                         Button {
                             vm.selectServiceForOps(svc)
                         } label: {
-                            HStack(spacing: 5) {
+                            HStack(spacing: 6) {
                                 Circle()
                                     .fill(svc.active ? emerald : Color.red)
-                                    .frame(width: 6, height: 6)
+                                    .frame(width: 6.5, height: 6.5)
                                 Text(svc.label)
-                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                     .foregroundColor(.white)
                                     .lineLimit(1)
                                 Spacer(minLength: 0)
                                 Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 8.5, weight: .bold))
+                                    .font(.system(size: 9, weight: .bold))
                                     .foregroundColor(Color(white: 0.5))
                             }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 7)
                             .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
@@ -935,15 +1037,15 @@ struct NativeCockpitScrollView: View {
         )
     }
 
-    private func vpsMeter(label: String, val: String, pct: Double) -> some View {
+    private func vpsMeter(label: String, val: String, sub: String, pct: Double) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(label)
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(white: 0.58))
+                    .foregroundColor(Color(white: 0.6))
                 Spacer()
                 Text(val)
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
             }
             GeometryReader { geo in
@@ -955,10 +1057,36 @@ struct NativeCockpitScrollView: View {
                 }
             }
             .frame(height: 5)
+            Text(sub)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(Color(white: 0.56))
+                .lineLimit(1)
         }
-        .padding(8)
-        .background(Color.black.opacity(0.25))
+        .padding(9)
+        .background(Color.black.opacity(0.26))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func vpsSpecPill(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(white: 0.55))
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+        )
     }
 
     // MARK: Panel 3 — Sài Gòn Weather + Native GDrive Audio Deck
@@ -1255,19 +1383,9 @@ struct NativeCockpitScrollView: View {
                     .font(.system(size: 12, weight: .heavy, design: .monospaced))
                     .foregroundColor(Color(white: 0.75))
                 Spacer()
-                Button {
-                    if let u = URL(string: "https://hub.buongloi.me/?mode=2d") {
-                        activeSheet = SheetWebTarget(title: "Nông Trại Buông Lơi 2D", url: u)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("🌾 Nông Trại 2D")
-                            .font(.system(size: 11.5, weight: .bold))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .bold))
-                    }
+                Text("Chạm mở nhanh · Ops Restart")
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                     .foregroundColor(emerald)
-                }
             }
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
@@ -1891,7 +2009,7 @@ struct FullScreenLoginGateView: View {
                             .foregroundColor(emerald)
                     }
 
-                    Text("SECURITY GATEWAY · PRO v4.2")
+                    Text("SECURITY GATEWAY · PRO v4.4")
                         .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
                         .foregroundColor(emerald)
                         .padding(.horizontal, 12)
